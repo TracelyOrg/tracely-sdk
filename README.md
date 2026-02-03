@@ -84,7 +84,7 @@ tracely.init(api_key="trly_your_key_here")
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `TRACELY_API_KEY` | API key for authentication | _(required)_ |
-| `TRACELY_ENDPOINT` | Ingestion API endpoint | `https://api.tracely.dev` |
+| `TRACELY_ENDPOINT` | Ingestion API endpoint | `https://i.tracely.sh` |
 | `ENVIRONMENT` | Deployment environment (e.g., `production`) | `None` |
 | `TRACELY_REDACT_FIELDS` | Comma-separated header/field names to redact | `None` |
 
@@ -160,6 +160,10 @@ Middleware (FastAPI/Flask/Django)
                                   HttpTransport --> TRACELY API
                                   (retry with exponential backoff)
 ```
+
+## Documentation
+
+Full docs at [docs.tracely.sh](https://docs.tracely.sh)
 
 ## License
 

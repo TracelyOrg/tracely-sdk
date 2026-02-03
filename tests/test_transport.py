@@ -65,7 +65,7 @@ class TestHttpTransport:
     async def test_send_success(self):
         """Successful send returns True."""
         transport = HttpTransport(
-            endpoint="https://api.tracely.dev",
+            endpoint="https://i.tracely.sh",
             api_key="trly_abc123",
         )
         mock_response = AsyncMock()
@@ -82,7 +82,7 @@ class TestHttpTransport:
     async def test_send_uses_protobuf_content_type(self):
         """Transport sends content= (bytes) not json= to endpoint."""
         transport = HttpTransport(
-            endpoint="https://api.tracely.dev",
+            endpoint="https://i.tracely.sh",
             api_key="trly_abc123",
         )
         mock_response = AsyncMock()
@@ -100,7 +100,7 @@ class TestHttpTransport:
     async def test_send_empty_payload_returns_true(self):
         """Empty payload is a no-op, returns True."""
         transport = HttpTransport(
-            endpoint="https://api.tracely.dev",
+            endpoint="https://i.tracely.sh",
             api_key="trly_abc123",
         )
         result = await transport.send(b"")
@@ -110,13 +110,13 @@ class TestHttpTransport:
     async def test_send_retries_on_failure(self):
         """Transport retries on server error with backoff."""
         transport = HttpTransport(
-            endpoint="https://api.tracely.dev",
+            endpoint="https://i.tracely.sh",
             api_key="trly_abc123",
             max_retries=2,
             base_delay=0.01,  # Fast for testing
         )
 
-        mock_request = httpx.Request("POST", "https://api.tracely.dev/v1/traces")
+        mock_request = httpx.Request("POST", "https://i.tracely.sh/v1/traces")
         fail_response = httpx.Response(500, request=mock_request)
 
         ok_response = AsyncMock()
@@ -132,7 +132,7 @@ class TestHttpTransport:
     async def test_send_catches_all_errors_silently(self):
         """AC4/FR10: Transport never raises to caller."""
         transport = HttpTransport(
-            endpoint="https://api.tracely.dev",
+            endpoint="https://i.tracely.sh",
             api_key="trly_abc123",
             max_retries=1,
             base_delay=0.01,
@@ -148,7 +148,7 @@ class TestHttpTransport:
     async def test_send_network_error_retries(self):
         """AC4/NFR22: Network errors trigger retry."""
         transport = HttpTransport(
-            endpoint="https://api.tracely.dev",
+            endpoint="https://i.tracely.sh",
             api_key="trly_abc123",
             max_retries=2,
             base_delay=0.01,
@@ -169,7 +169,7 @@ class TestHttpTransport:
     async def test_send_all_retries_exhausted_no_raise(self):
         """When all retries fail, transport still does not raise."""
         transport = HttpTransport(
-            endpoint="https://api.tracely.dev",
+            endpoint="https://i.tracely.sh",
             api_key="trly_abc123",
             max_retries=2,
             base_delay=0.01,
@@ -188,7 +188,7 @@ class TestHttpTransport:
     async def test_exponential_backoff_delays(self):
         """AC4: Verify exponential backoff 1s, 2s, 4s, max 30s."""
         transport = HttpTransport(
-            endpoint="https://api.tracely.dev",
+            endpoint="https://i.tracely.sh",
             api_key="trly_abc123",
             max_retries=4,
             base_delay=1.0,
@@ -213,7 +213,7 @@ class TestHttpTransport:
     async def test_backoff_capped_at_max_delay(self):
         """AC4: Delay never exceeds max_delay (30s)."""
         transport = HttpTransport(
-            endpoint="https://api.tracely.dev",
+            endpoint="https://i.tracely.sh",
             api_key="trly_abc123",
             max_retries=6,
             base_delay=1.0,
@@ -238,7 +238,7 @@ class TestHttpTransport:
     async def test_protobuf_content_type_header(self):
         """HttpTransport uses application/x-protobuf content type."""
         transport = HttpTransport(
-            endpoint="https://api.tracely.dev",
+            endpoint="https://i.tracely.sh",
             api_key="trly_abc123",
         )
         assert transport._client.headers["content-type"] == "application/x-protobuf"

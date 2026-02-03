@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 
-DEFAULT_ENDPOINT = "https://api.tracely.dev"
+DEFAULT_ENDPOINT = "https://i.tracely.sh"
 
 
 @dataclass

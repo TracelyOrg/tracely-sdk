@@ -39,7 +39,7 @@ class TestTracelyConfig:
         """AC2: Defaults to cloud API when TRACELY_ENDPOINT not set."""
         with patch.dict(os.environ, {"TRACELY_API_KEY": "trly_abc123"}, clear=True):
             config = TracelyConfig.from_env()
-            assert config.endpoint == "https://api.tracely.dev"
+            assert config.endpoint == "https://i.tracely.sh"
 
     def test_default_environment_is_none(self):
         """Environment defaults to None when not set."""

@@ -43,6 +43,7 @@ dev = [
 
 [project.urls]
 Homepage = "https://tracely.sh"
+Documentation = "https://docs.tracely.sh"
 Repository = "https://github.com/TracelyOrg/tracely-sdk"
 Issues = "https://github.com/TracelyOrg/tracely-sdk/issues"
 
