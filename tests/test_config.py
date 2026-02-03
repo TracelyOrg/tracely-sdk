@@ -18,10 +18,10 @@ class TestTracelyConfig:
             assert config.api_key == "trly_abc123"
 
     def test_reads_environment_from_env(self):
-        """AC2: Reads optional TRACELY_ENVIRONMENT."""
+        """AC2: Reads ENVIRONMENT from env (generic, works with any framework)."""
         with patch.dict(os.environ, {
             "TRACELY_API_KEY": "trly_abc123",
-            "TRACELY_ENVIRONMENT": "production",
+            "ENVIRONMENT": "production",
         }):
             config = TracelyConfig.from_env()
             assert config.environment == "production"
@@ -64,6 +64,34 @@ class TestTracelyConfig:
             assert config.api_key == "trly_explicit_key"
             assert config.environment == "staging"
             assert config.endpoint == "https://custom.endpoint.com"
+
+    def test_service_name_not_read_from_env(self):
+        """service_name is init-only, not read from env."""
+        with patch.dict(os.environ, {
+            "TRACELY_API_KEY": "trly_abc123",
+            "TRACELY_SERVICE_NAME": "should-be-ignored",
+        }):
+            config = TracelyConfig.from_env()
+            assert config.service_name is None
+
+    def test_service_version_not_read_from_env(self):
+        """service_version is init-only, not read from env."""
+        with patch.dict(os.environ, {
+            "TRACELY_API_KEY": "trly_abc123",
+            "TRACELY_SERVICE_VERSION": "9.9.9",
+        }):
+            config = TracelyConfig.from_env()
+            assert config.service_version is None
+
+    def test_service_name_set_explicitly(self):
+        """service_name can be set via constructor."""
+        config = TracelyConfig(api_key="trly_abc123", service_name="celery-worker")
+        assert config.service_name == "celery-worker"
+
+    def test_service_version_set_explicitly(self):
+        """service_version can be set via constructor."""
+        config = TracelyConfig(api_key="trly_abc123", service_version="2.0.0")
+        assert config.service_version == "2.0.0"
 
     def test_enabled_when_api_key_present(self):
         """SDK is enabled when API key is present."""

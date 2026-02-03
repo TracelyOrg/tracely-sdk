@@ -28,6 +28,8 @@ def init(
     api_key: str | None = None,
     environment: str | None = None,
     endpoint: str | None = None,
+    service_name: str | None = None,
+    service_version: str | None = None,
 ) -> None:
     """Initialize the TRACELY SDK.
 
@@ -36,8 +38,10 @@ def init(
 
     Args:
         api_key: Override TRACELY_API_KEY env var.
-        environment: Override TRACELY_ENVIRONMENT env var.
+        environment: Override ENVIRONMENT env var.
         endpoint: Override TRACELY_ENDPOINT env var.
+        service_name: Label for this service (e.g., "api", "celery-worker").
+        service_version: Version string for this service.
     """
     global _instance
 
@@ -52,6 +56,10 @@ def init(
         config.environment = environment
     if endpoint is not None:
         config.endpoint = endpoint
+    if service_name is not None:
+        config.service_name = service_name
+    if service_version is not None:
+        config.service_version = service_version
 
     if not config.enabled:
         logger.warning(
