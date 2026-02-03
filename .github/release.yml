@@ -1,0 +1,34 @@
+changelog:
+  exclude:
+    labels:
+      - skip-changelog
+      - dependencies
+    authors:
+      - dependabot
+      - github-actions
+
+  categories:
+    - title: "New Features"
+      labels:
+        - feature
+        - enhancement
+    - title: "Bug Fixes"
+      labels:
+        - bug
+        - fix
+    - title: "Instrumentation"
+      labels:
+        - instrumentation
+        - fastapi
+        - flask
+        - django
+    - title: "Performance"
+      labels:
+        - performance
+    - title: "Documentation"
+      labels:
+        - documentation
+        - docs
+    - title: "Other Changes"
+      labels:
+        - "*"

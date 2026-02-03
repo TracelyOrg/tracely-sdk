@@ -3,14 +3,33 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "tracely"
+name = "tracely-sdk"
 version = "0.1.0"
-description = "Lightweight observability SDK for Python web frameworks"
+description = "Lightweight observability SDK for Python web frameworks. Auto-instruments FastAPI, Flask, and Django with real-time tracing via OTLP/HTTP."
+readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
+authors = [
+    {name = "Charles Dzadu", email = "contact@tracely.sh"},
+]
+keywords = ["observability", "tracing", "opentelemetry", "fastapi", "flask", "django", "monitoring", "apm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Framework :: FastAPI",
+    "Framework :: Flask",
+    "Framework :: Django",
+    "Typing :: Typed",
+]
 dependencies = [
-    "opentelemetry-sdk>=1.20",
-    "opentelemetry-api>=1.20",
     "opentelemetry-proto>=1.20",
     "httpx>=0.27",
 ]
@@ -21,6 +40,11 @@ dev = [
     "pytest-asyncio>=0.23",
     "respx>=0.21",
 ]
+
+[project.urls]
+Homepage = "https://tracely.sh"
+Repository = "https://github.com/TracelyOrg/tracely-sdk"
+Issues = "https://github.com/TracelyOrg/tracely-sdk/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tracely"]
