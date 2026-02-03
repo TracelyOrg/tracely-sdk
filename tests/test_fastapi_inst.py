@@ -283,3 +283,241 @@ class TestFastAPIInstrumentor:
         inst = FastAPIInstrumentor(framework_info)
         inst.activate()
         inst.deactivate()
+
+
+class TestASGIRequestResponseCapture:
+    """Test full request/response data capture in ASGI middleware (Story 2.4)."""
+
+    @staticmethod
+    async def _mock_receive_with_body(body: bytes = b""):
+        """Create a receive callable that returns a body."""
+        async def receive():
+            return {"type": "http.request", "body": body, "more_body": False}
+        return receive
+
+    @staticmethod
+    async def _noop_send(msg):
+        pass
+
+    def _make_scope(
+        self,
+        method: str = "GET",
+        path: str = "/",
+        query_string: bytes = b"",
+        headers: list | None = None,
+        scheme: str = "https",
+        server: tuple = ("example.com", 443),
+    ) -> dict:
+        return {
+            "type": "http",
+            "method": method,
+            "path": path,
+            "query_string": query_string,
+            "headers": headers or [],
+            "scheme": scheme,
+            "server": server,
+        }
+
+    @pytest.mark.asyncio
+    async def test_captures_request_headers(self) -> None:
+        """AC1: request headers are captured as span attribute."""
+        captured: list[dict] = []
+
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"OK"})
+
+        mw = TracelyASGIMiddleware(app=app, on_span=lambda s: captured.append(s))
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"accept", b"text/html"),
+        ]
+        scope = self._make_scope(headers=headers)
+        receive = await self._mock_receive_with_body(b"")
+        await mw(scope, receive, self._noop_send)
+
+        assert "http.request.headers" in captured[0]["attributes"]
+        import json
+        hdrs = json.loads(captured[0]["attributes"]["http.request.headers"])
+        assert hdrs["content-type"] == "application/json"
+
+    @pytest.mark.asyncio
+    async def test_captures_request_body(self) -> None:
+        """AC1: request body is captured as span attribute."""
+        captured: list[dict] = []
+
+        async def app(scope, receive, send):
+            # App must still be able to read the body
+            msg = await receive()
+            assert msg["body"] == b'{"name": "test"}'
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"OK"})
+
+        mw = TracelyASGIMiddleware(app=app, on_span=lambda s: captured.append(s))
+        headers = [(b"content-type", b"application/json")]
+        scope = self._make_scope(method="POST", headers=headers)
+        receive = await self._mock_receive_with_body(b'{"name": "test"}')
+        await mw(scope, receive, self._noop_send)
+
+        assert captured[0]["attributes"]["http.request.body"] == '{"name": "test"}'
+
+    @pytest.mark.asyncio
+    async def test_captures_full_url(self) -> None:
+        """AC1: full URL (scheme+host+path+query) is captured."""
+        captured: list[dict] = []
+
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"OK"})
+
+        mw = TracelyASGIMiddleware(app=app, on_span=lambda s: captured.append(s))
+        scope = self._make_scope(
+            path="/api/users",
+            query_string=b"page=1",
+            scheme="https",
+            server=("example.com", 443),
+        )
+        receive = await self._mock_receive_with_body(b"")
+        await mw(scope, receive, self._noop_send)
+
+        assert captured[0]["attributes"]["http.url"] == "https://example.com/api/users?page=1"
+
+    @pytest.mark.asyncio
+    async def test_captures_response_headers(self) -> None:
+        """AC2: response headers are captured."""
+        captured: list[dict] = []
+
+        async def app(scope, receive, send):
+            await send({
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"application/json"), (b"x-request-id", b"abc123")],
+            })
+            await send({"type": "http.response.body", "body": b'{"ok": true}'})
+
+        mw = TracelyASGIMiddleware(app=app, on_span=lambda s: captured.append(s))
+        scope = self._make_scope()
+        receive = await self._mock_receive_with_body(b"")
+        await mw(scope, receive, self._noop_send)
+
+        import json
+        resp_hdrs = json.loads(captured[0]["attributes"]["http.response.headers"])
+        assert resp_hdrs["content-type"] == "application/json"
+        assert resp_hdrs["x-request-id"] == "abc123"
+
+    @pytest.mark.asyncio
+    async def test_captures_response_body(self) -> None:
+        """AC2: response body is captured."""
+        captured: list[dict] = []
+
+        async def app(scope, receive, send):
+            await send({"type": "http.response.start", "status": 200, "headers": [(b"content-type", b"application/json")]})
+            await send({"type": "http.response.body", "body": b'{"id": 1}'})
+
+        mw = TracelyASGIMiddleware(app=app, on_span=lambda s: captured.append(s))
+        scope = self._make_scope()
+        receive = await self._mock_receive_with_body(b"")
+        await mw(scope, receive, self._noop_send)
+
+        assert captured[0]["attributes"]["http.response.body"] == '{"id": 1}'
+
+    @pytest.mark.asyncio
+    async def test_truncates_large_request_body(self) -> None:
+        """AC3: request body > 64KB is truncated."""
+        captured: list[dict] = []
+        large_body = b"x" * 70000
+
+        async def app(scope, receive, send):
+            await receive()  # consume body
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"OK"})
+
+        mw = TracelyASGIMiddleware(app=app, on_span=lambda s: captured.append(s))
+        headers = [(b"content-type", b"text/plain")]
+        scope = self._make_scope(method="POST", headers=headers)
+        receive = await self._mock_receive_with_body(large_body)
+        await mw(scope, receive, self._noop_send)
+
+        assert captured[0]["attributes"]["http.request.body"].endswith("[truncated]")
+        assert captured[0]["attributes"]["http.request.body.original_length"] == str(len(large_body))
+
+    @pytest.mark.asyncio
+    async def test_replaces_binary_request_body(self) -> None:
+        """AC4: binary content type request body replaced with placeholder."""
+        captured: list[dict] = []
+
+        async def app(scope, receive, send):
+            await receive()
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"OK"})
+
+        mw = TracelyASGIMiddleware(app=app, on_span=lambda s: captured.append(s))
+        headers = [(b"content-type", b"image/png")]
+        scope = self._make_scope(method="POST", headers=headers)
+        receive = await self._mock_receive_with_body(b"\x89PNG" + b"\x00" * 100)
+        await mw(scope, receive, self._noop_send)
+
+        assert captured[0]["attributes"]["http.request.body"].startswith("[binary:")
+
+    @pytest.mark.asyncio
+    async def test_truncates_large_response_body(self) -> None:
+        """AC3: response body > 64KB is truncated."""
+        captured: list[dict] = []
+        large_response = b"y" * 70000
+
+        async def app(scope, receive, send):
+            await send({
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/plain")],
+            })
+            await send({"type": "http.response.body", "body": large_response})
+
+        mw = TracelyASGIMiddleware(app=app, on_span=lambda s: captured.append(s))
+        scope = self._make_scope()
+        receive = await self._mock_receive_with_body(b"")
+        await mw(scope, receive, self._noop_send)
+
+        assert captured[0]["attributes"]["http.response.body"].endswith("[truncated]")
+        assert captured[0]["attributes"]["http.response.body.original_length"] == str(len(large_response))
+
+    @pytest.mark.asyncio
+    async def test_replaces_binary_response_body(self) -> None:
+        """AC4: binary content type response body replaced with placeholder."""
+        captured: list[dict] = []
+
+        async def app(scope, receive, send):
+            await send({
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"image/jpeg")],
+            })
+            await send({"type": "http.response.body", "body": b"\xff\xd8\xff" + b"\x00" * 500})
+
+        mw = TracelyASGIMiddleware(app=app, on_span=lambda s: captured.append(s))
+        scope = self._make_scope()
+        receive = await self._mock_receive_with_body(b"")
+        await mw(scope, receive, self._noop_send)
+
+        assert captured[0]["attributes"]["http.response.body"].startswith("[binary:")
+
+    @pytest.mark.asyncio
+    async def test_multi_chunk_response_body(self) -> None:
+        """Response body arriving in multiple chunks should be concatenated."""
+        captured: list[dict] = []
+
+        async def app(scope, receive, send):
+            await send({
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/plain")],
+            })
+            await send({"type": "http.response.body", "body": b"hello ", "more_body": True})
+            await send({"type": "http.response.body", "body": b"world"})
+
+        mw = TracelyASGIMiddleware(app=app, on_span=lambda s: captured.append(s))
+        scope = self._make_scope()
+        receive = await self._mock_receive_with_body(b"")
+        await mw(scope, receive, self._noop_send)
+
+        assert captured[0]["attributes"]["http.response.body"] == "hello world"

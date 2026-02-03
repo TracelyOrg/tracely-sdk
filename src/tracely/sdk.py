@@ -8,6 +8,7 @@ from tracely.config import TracelyConfig
 from tracely.detection import FrameworkInfo, detect_framework
 from tracely.instrumentation import get_instrumentor
 from tracely.instrumentation.base import BaseInstrumentor
+from tracely.redaction import configure_redaction
 
 logger = logging.getLogger("tracely")
 
@@ -75,6 +76,9 @@ def init(
         config.service_name = service_name
     if service_version is not None:
         config.service_version = service_version
+
+    # Configure smart data redaction with custom fields from env (FR8, FR11)
+    configure_redaction(extra_fields=config.redact_fields)
 
     if not config.enabled:
         logger.warning(
