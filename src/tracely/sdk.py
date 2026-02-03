@@ -127,8 +127,8 @@ def init(
             endpoint=config.endpoint,
             api_key=config.api_key,
         )
-        processor = SpanProcessor(buffer=buffer)
         exporter = BatchSpanExporter(buffer=buffer, transport=transport)
+        processor = SpanProcessor(buffer=buffer, on_buffer_ready=exporter.notify)
 
         # Register global processor for middleware to use
         set_processor(processor)

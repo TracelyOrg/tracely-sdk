@@ -12,7 +12,7 @@ All operations are fail-silent — never crashes the host application.
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Callable
 
 if TYPE_CHECKING:
     from tracely.span import Span
@@ -61,10 +61,25 @@ class SpanProcessor:
 
     Args:
         buffer: SpanBuffer to enqueue span dicts into.
+        on_buffer_ready: Optional callback invoked when the buffer reaches
+            the batch threshold (e.g. to wake the exporter).
     """
 
-    def __init__(self, buffer: SpanBuffer) -> None:
+    def __init__(
+        self,
+        buffer: SpanBuffer,
+        on_buffer_ready: Callable[[], None] | None = None,
+    ) -> None:
         self._buffer = buffer
+        self._on_buffer_ready = on_buffer_ready
+
+    def _maybe_notify(self) -> None:
+        """Call the notify callback if the buffer has reached batch threshold."""
+        if self._on_buffer_ready is not None and self._buffer.is_ready:
+            try:
+                self._on_buffer_ready()
+            except Exception:
+                logger.debug("Error in buffer-ready callback", exc_info=True)
 
     def on_start(self, span: Span) -> None:
         """Export a pending_span when a span starts.
@@ -76,6 +91,7 @@ class SpanProcessor:
             d = span.to_dict()
             d["span_type"] = "pending_span"
             self._buffer.enqueue(d)
+            self._maybe_notify()
         except Exception:
             logger.debug("Error in SpanProcessor.on_start", exc_info=True)
 
@@ -89,5 +105,6 @@ class SpanProcessor:
             d = span.to_dict()
             d["span_type"] = "span"
             self._buffer.enqueue(d)
+            self._maybe_notify()
         except Exception:
             logger.debug("Error in SpanProcessor.on_end", exc_info=True)

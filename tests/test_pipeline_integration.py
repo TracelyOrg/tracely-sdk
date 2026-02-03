@@ -41,7 +41,7 @@ class TestFullPipeline:
         items = buf.flush()
         assert len(items) == 1
         assert items[0]["span_type"] == "pending_span"
-        assert items[0]["name"] == "GET /users"
+        assert items[0]["span_name"] == "GET /users"
         assert items[0]["trace_id"] is not None
         assert items[0]["span_id"] is not None
 
@@ -144,7 +144,6 @@ class TestFullPipeline:
             buffer=buf,
             transport=transport,
             flush_interval=0.1,
-            batch_threshold=1,
         )
 
         # Enqueue a span
@@ -217,7 +216,7 @@ class TestFullPipeline:
             # pending_span + final span
             assert len(items) == 2
             assert items[0]["span_type"] == "pending_span"
-            assert items[0]["name"] == "db-query"
+            assert items[0]["span_name"] == "db-query"
             assert items[1]["span_type"] == "span"
             assert items[1]["attributes"]["db.statement"] == "SELECT 1"
         finally:
@@ -256,8 +255,25 @@ class TestFullPipeline:
         items = buf.flush()
         assert len(items) == 5
         # Should have the 5 most recent
-        names = [i["name"] for i in items]
+        names = [i["span_name"] for i in items]
         assert names == [f"span-{i}" for i in range(5, 10)]
+
+    def test_batch_threshold_triggers_notify(self):
+        """AC3: When buffer reaches batch_size, processor calls notify."""
+        notified = []
+        buf = SpanBuffer(batch_size=3)
+        proc = SpanProcessor(buffer=buf, on_buffer_ready=lambda: notified.append(True))
+
+        # Enqueue 2 spans — under threshold, no notify
+        for _ in range(2):
+            span = Span(name="GET /", kind="SERVER")
+            proc.on_start(span)
+        assert len(notified) == 0
+
+        # 3rd span crosses threshold
+        span = Span(name="GET /", kind="SERVER")
+        proc.on_start(span)
+        assert len(notified) == 1
 
     def test_fail_silent_on_processor_error(self):
         """AC4/FR10: Processor errors don't crash the host."""
