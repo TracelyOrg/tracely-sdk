@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 
 from tracely.config import TracelyConfig
+from tracely.detection import FrameworkInfo, detect_framework
+from tracely.instrumentation import get_instrumentor
+from tracely.instrumentation.base import BaseInstrumentor
 
 logger = logging.getLogger("tracely")
 
@@ -14,12 +17,24 @@ _instance: TracelySdk | None = None
 class TracelySdk:
     """Singleton managing SDK state and lifecycle."""
 
-    def __init__(self, config: TracelyConfig) -> None:
+    def __init__(
+        self,
+        config: TracelyConfig,
+        framework_info: FrameworkInfo | None = None,
+        instrumentor: BaseInstrumentor | None = None,
+    ) -> None:
         self.config = config
         self.enabled = config.enabled
+        self.framework_info = framework_info
+        self.instrumentor = instrumentor
 
     def shutdown(self) -> None:
-        """Flush buffers and release resources."""
+        """Flush buffers, deactivate instrumentation, release resources."""
+        if self.instrumentor is not None:
+            try:
+                self.instrumentor.deactivate()
+            except Exception:
+                logger.debug("Error deactivating instrumentor", exc_info=True)
         self.enabled = False
 
 
@@ -67,7 +82,33 @@ def init(
             "no telemetry will be collected or sent."
         )
 
-    _instance = TracelySdk(config=config)
+    # Detect framework (always, even when disabled — for diagnostics)
+    framework_info = detect_framework()
+
+    # Activate instrumentation only when SDK is enabled
+    instrumentor: BaseInstrumentor | None = None
+    if config.enabled and framework_info is not None:
+        instrumentor = get_instrumentor(framework_info)
+        if instrumentor is not None:
+            try:
+                instrumentor.activate()
+            except Exception:
+                logger.debug("Error activating instrumentor", exc_info=True)
+                instrumentor = None
+
+    if framework_info is not None:
+        logger.info("TRACELY: Detected framework: %s", framework_info.name)
+    else:
+        logger.info(
+            "TRACELY: No supported framework detected. "
+            "Use manual instrumentation for custom setups."
+        )
+
+    _instance = TracelySdk(
+        config=config,
+        framework_info=framework_info,
+        instrumentor=instrumentor,
+    )
 
 
 def shutdown() -> None:
