@@ -5,5 +5,6 @@ from __future__ import annotations
 __version__ = "0.1.0"
 
 from tracely.sdk import init, shutdown
+from tracely.tracing import span
 
-__all__ = ["init", "shutdown", "__version__"]
+__all__ = ["init", "shutdown", "span", "__version__"]

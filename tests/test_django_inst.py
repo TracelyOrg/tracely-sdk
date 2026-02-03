@@ -1,18 +1,19 @@
-"""Tests for Django auto-instrumentation (Story 2.2, Task 4)."""
+"""Tests for Django auto-instrumentation (Story 2.2 + 2.3 span hierarchy)."""
 
 from __future__ import annotations
 
-import time
 from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
 
+from tracely.context import get_current_span
 from tracely.detection import FrameworkInfo
 from tracely.instrumentation.django_inst import (
     DjangoInstrumentor,
     TracelyDjangoMiddleware,
 )
+from tracely.span import Span
 
 
 @pytest.fixture
@@ -54,6 +55,7 @@ class TestTracelyDjangoMiddleware:
         mw = TracelyDjangoMiddleware(
             get_response=get_response,
             on_span=lambda span: captured_spans.append(span),
+            service_name="django-api",
         )
         request = self._make_request("GET", "/api/users/")
         result = mw(request)
@@ -61,11 +63,24 @@ class TestTracelyDjangoMiddleware:
         assert result is response
         assert len(captured_spans) == 1
         span = captured_spans[0]
-        assert span["http.method"] == "GET"
-        assert span["http.route"] == "/api/users/"
-        assert span["http.status_code"] == 200
+        assert span["attributes"]["http.method"] == "GET"
+        assert span["attributes"]["http.route"] == "/api/users/"
+        assert span["attributes"]["http.status_code"] == "200"
         assert span["duration_ms"] >= 0
-        assert span["span_type"] == "http"
+        assert span["span_type"] == "span"
+
+    def test_span_has_trace_id_and_span_id(self, captured_spans: list[dict]) -> None:
+        """Root span has unique trace_id and span_id (FR55)."""
+
+        def get_response(req: Any) -> Any:
+            return self._make_response(200)
+
+        mw = TracelyDjangoMiddleware(get_response=get_response, on_span=lambda s: captured_spans.append(s))
+        mw(self._make_request())
+        span = captured_spans[0]
+        assert len(span["trace_id"]) == 32
+        assert len(span["span_id"]) == 16
+        assert span["parent_span_id"] is None
 
     def test_captures_post_request(self, captured_spans: list[dict]) -> None:
         response = self._make_response(201)
@@ -73,28 +88,18 @@ class TestTracelyDjangoMiddleware:
         def get_response(req: Any) -> Any:
             return response
 
-        mw = TracelyDjangoMiddleware(
-            get_response=get_response,
-            on_span=lambda s: captured_spans.append(s),
-        )
-        request = self._make_request("POST", "/api/items/")
-        mw(request)
-
-        assert captured_spans[0]["http.method"] == "POST"
-        assert captured_spans[0]["http.status_code"] == 201
+        mw = TracelyDjangoMiddleware(get_response=get_response, on_span=lambda s: captured_spans.append(s))
+        mw(self._make_request("POST", "/api/items/"))
+        assert captured_spans[0]["attributes"]["http.method"] == "POST"
+        assert captured_spans[0]["attributes"]["http.status_code"] == "201"
 
     def test_captures_query_string(self, captured_spans: list[dict]) -> None:
         def get_response(req: Any) -> Any:
             return self._make_response(200)
 
-        mw = TracelyDjangoMiddleware(
-            get_response=get_response,
-            on_span=lambda s: captured_spans.append(s),
-        )
-        request = self._make_request("GET", "/search/", query="q=hello")
-        mw(request)
-
-        assert captured_spans[0]["http.query"] == "q=hello"
+        mw = TracelyDjangoMiddleware(get_response=get_response, on_span=lambda s: captured_spans.append(s))
+        mw(self._make_request("GET", "/search/", query="q=hello"))
+        assert captured_spans[0]["attributes"]["http.query"] == "q=hello"
 
     def test_captures_exception(self, captured_spans: list[dict]) -> None:
         """If get_response raises, middleware still records span with error."""
@@ -102,30 +107,38 @@ class TestTracelyDjangoMiddleware:
         def get_response(req: Any) -> Any:
             raise RuntimeError("db crashed")
 
-        mw = TracelyDjangoMiddleware(
-            get_response=get_response,
-            on_span=lambda s: captured_spans.append(s),
-        )
-        request = self._make_request("GET", "/crash/")
-
+        mw = TracelyDjangoMiddleware(get_response=get_response, on_span=lambda s: captured_spans.append(s))
         with pytest.raises(RuntimeError, match="db crashed"):
-            mw(request)
+            mw(self._make_request("GET", "/crash/"))
 
         assert len(captured_spans) == 1
-        assert captured_spans[0]["error"] is True
-        assert "RuntimeError" in captured_spans[0]["error.type"]
+        assert captured_spans[0]["attributes"]["error"] == "true"
+        assert captured_spans[0]["attributes"]["error.type"] == "RuntimeError"
+        assert captured_spans[0]["status_code"] == "ERROR"
 
     def test_captures_500_status(self, captured_spans: list[dict]) -> None:
         def get_response(req: Any) -> Any:
             return self._make_response(500)
 
-        mw = TracelyDjangoMiddleware(
-            get_response=get_response,
-            on_span=lambda s: captured_spans.append(s),
-        )
+        mw = TracelyDjangoMiddleware(get_response=get_response, on_span=lambda s: captured_spans.append(s))
         mw(self._make_request())
+        assert captured_spans[0]["attributes"]["http.status_code"] == "500"
 
-        assert captured_spans[0]["http.status_code"] == 500
+    def test_context_propagation_during_request(self) -> None:
+        """Root span is active during request processing."""
+        active_spans: list[Span | None] = []
+
+        def get_response(req: Any) -> Any:
+            active_spans.append(get_current_span())
+            resp = MagicMock()
+            resp.status_code = 200
+            return resp
+
+        mw = TracelyDjangoMiddleware(get_response=get_response)
+        mw(self._make_request("GET", "/test/"))
+        assert len(active_spans) == 1
+        assert isinstance(active_spans[0], Span)
+        assert active_spans[0].name == "GET /test/"
 
 
 class TestDjangoInstrumentor:

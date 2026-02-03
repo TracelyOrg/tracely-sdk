@@ -1,22 +1,24 @@
-"""Tests for database query instrumentation (Story 2.2, Task 6).
+"""Tests for database query instrumentation (Story 2.2 + 2.3).
 
-Tests SQLAlchemy, Django ORM, and MongoDB query tracking without
-requiring actual database connections — all via mocking.
+Tests SQLAlchemy, Django ORM, and MongoDB query tracking including
+child span hierarchy when a parent span is active (AC2).
 """
 
 from __future__ import annotations
 
 import time
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
+from tracely.context import _span_context
 from tracely.instrumentation.dbapi import (
     SQLAlchemyInstrumentor,
     DjangoORMInstrumentor,
     MongoInstrumentor,
 )
+from tracely.span import Span
 
 
 # ---------------------------------------------------------------------------
@@ -25,30 +27,22 @@ from tracely.instrumentation.dbapi import (
 class TestSQLAlchemyInstrumentor:
     """Test SQLAlchemy event-based query timing."""
 
-    def test_records_query_span(self) -> None:
-        """on_query_end produces a span with statement, duration, db.system."""
+    def test_records_query_span_no_parent(self) -> None:
+        """Without active parent, produces flat dict span."""
         captured: list[dict[str, Any]] = []
         inst = SQLAlchemyInstrumentor(on_span=lambda s: captured.append(s))
 
-        # Simulate before/after cursor execute
         ctx = MagicMock()
         inst.before_cursor_execute(
-            conn=MagicMock(),
-            cursor=MagicMock(),
-            statement="SELECT * FROM users WHERE id = %s",
-            parameters=(1,),
-            context=ctx,
-            executemany=False,
+            MagicMock(), MagicMock(),
+            "SELECT * FROM users WHERE id = %s",
+            (1,), ctx, False,
         )
-        # Simulate some time passing
         time.sleep(0.001)
         inst.after_cursor_execute(
-            conn=MagicMock(),
-            cursor=MagicMock(),
-            statement="SELECT * FROM users WHERE id = %s",
-            parameters=(1,),
-            context=ctx,
-            executemany=False,
+            MagicMock(), MagicMock(),
+            "SELECT * FROM users WHERE id = %s",
+            (1,), ctx, False,
         )
 
         assert len(captured) == 1
@@ -57,6 +51,33 @@ class TestSQLAlchemyInstrumentor:
         assert span["db.system"] == "sql"
         assert "SELECT" in span["db.statement"]
         assert span["duration_ms"] >= 0
+
+    def test_creates_child_span_with_parent(self) -> None:
+        """With active parent, creates child Span with parent_span_id (AC2)."""
+        captured: list[dict[str, Any]] = []
+        inst = SQLAlchemyInstrumentor(on_span=lambda s: captured.append(s))
+
+        root = Span(name="GET /api/users", kind="SERVER")
+        with _span_context(root):
+            ctx = MagicMock()
+            inst.before_cursor_execute(
+                MagicMock(), MagicMock(),
+                "SELECT * FROM users",
+                (), ctx, False,
+            )
+            inst.after_cursor_execute(
+                MagicMock(), MagicMock(),
+                "SELECT * FROM users",
+                (), ctx, False,
+            )
+
+        assert len(captured) == 1
+        span = captured[0]
+        assert span["parent_span_id"] == root.span_id
+        assert span["trace_id"] == root.trace_id
+        assert span["kind"] == "CLIENT"
+        assert span["attributes"]["db.system"] == "sql"
+        assert span["attributes"]["db.operation"] == "SELECT"
 
     def test_records_insert_statement(self) -> None:
         captured: list[dict[str, Any]] = []
@@ -91,9 +112,7 @@ class TestSQLAlchemyInstrumentor:
             assert captured[0]["db.operation"] == expected_op
 
     def test_never_raises(self) -> None:
-        """Instrumentation never crashes — errors are silently caught."""
         inst = SQLAlchemyInstrumentor(on_span=None)
-        # Should not raise even with None callback
         ctx = MagicMock()
         inst.before_cursor_execute(MagicMock(), MagicMock(), "SELECT 1", (), ctx, False)
         inst.after_cursor_execute(MagicMock(), MagicMock(), "SELECT 1", (), ctx, False)
@@ -105,7 +124,7 @@ class TestSQLAlchemyInstrumentor:
 class TestDjangoORMInstrumentor:
     """Test Django ORM query tracking."""
 
-    def test_records_query_span(self) -> None:
+    def test_records_query_span_no_parent(self) -> None:
         captured: list[dict[str, Any]] = []
         inst = DjangoORMInstrumentor(on_span=lambda s: captured.append(s))
 
@@ -122,6 +141,26 @@ class TestDjangoORMInstrumentor:
         assert "SELECT" in span["db.statement"]
         assert span["duration_ms"] == 12.5
         assert span["db.operation"] == "SELECT"
+
+    def test_creates_child_span_with_parent(self) -> None:
+        """With active parent, creates child Span linked to parent (AC2)."""
+        captured: list[dict[str, Any]] = []
+        inst = DjangoORMInstrumentor(on_span=lambda s: captured.append(s))
+
+        root = Span(name="GET /api/users", kind="SERVER")
+        with _span_context(root):
+            inst.on_query(
+                sql="SELECT * FROM auth_user",
+                duration_ms=5.0,
+                vendor="postgresql",
+            )
+
+        assert len(captured) == 1
+        span = captured[0]
+        assert span["parent_span_id"] == root.span_id
+        assert span["trace_id"] == root.trace_id
+        assert span["attributes"]["db.system"] == "postgresql"
+        assert span["attributes"]["db.operation"] == "SELECT"
 
     def test_records_sqlite_vendor(self) -> None:
         captured: list[dict[str, Any]] = []
@@ -140,22 +179,12 @@ class TestDjangoORMInstrumentor:
 class TestMongoInstrumentor:
     """Test MongoDB command monitoring."""
 
-    def test_records_command_span(self) -> None:
+    def test_records_command_span_no_parent(self) -> None:
         captured: list[dict[str, Any]] = []
         inst = MongoInstrumentor(on_span=lambda s: captured.append(s))
 
-        # Simulate command start
-        inst.on_command_start(
-            command_name="find",
-            database_name="mydb",
-            request_id=123,
-        )
-        time.sleep(0.001)
-        # Simulate command success
-        inst.on_command_success(
-            request_id=123,
-            duration_ms=5.2,
-        )
+        inst.on_command_start("find", "mydb", 123)
+        inst.on_command_success(123, 5.2)
 
         assert len(captured) == 1
         span = captured[0]
@@ -165,20 +194,30 @@ class TestMongoInstrumentor:
         assert span["db.name"] == "mydb"
         assert span["duration_ms"] == 5.2
 
-    def test_records_command_failure(self) -> None:
+    def test_creates_child_span_with_parent(self) -> None:
+        """With active parent, creates child Span linked to parent (AC2)."""
         captured: list[dict[str, Any]] = []
         inst = MongoInstrumentor(on_span=lambda s: captured.append(s))
 
-        inst.on_command_start(
-            command_name="insert",
-            database_name="mydb",
-            request_id=456,
-        )
-        inst.on_command_failure(
-            request_id=456,
-            duration_ms=3.0,
-            failure="duplicate key error",
-        )
+        root = Span(name="GET /api/items", kind="SERVER")
+        with _span_context(root):
+            inst.on_command_start("find", "mydb", 123)
+            inst.on_command_success(123, 5.2)
+
+        assert len(captured) == 1
+        span = captured[0]
+        assert span["parent_span_id"] == root.span_id
+        assert span["trace_id"] == root.trace_id
+        assert span["attributes"]["db.system"] == "mongodb"
+        assert span["attributes"]["db.operation"] == "find"
+        assert span["attributes"]["db.name"] == "mydb"
+
+    def test_records_command_failure_no_parent(self) -> None:
+        captured: list[dict[str, Any]] = []
+        inst = MongoInstrumentor(on_span=lambda s: captured.append(s))
+
+        inst.on_command_start("insert", "mydb", 456)
+        inst.on_command_failure(456, 3.0, "duplicate key error")
 
         assert len(captured) == 1
         span = captured[0]
@@ -186,10 +225,24 @@ class TestMongoInstrumentor:
         assert span["error.message"] == "duplicate key error"
         assert span["db.operation"] == "insert"
 
+    def test_records_command_failure_with_parent(self) -> None:
+        captured: list[dict[str, Any]] = []
+        inst = MongoInstrumentor(on_span=lambda s: captured.append(s))
+
+        root = Span(name="POST /api/items", kind="SERVER")
+        with _span_context(root):
+            inst.on_command_start("insert", "mydb", 456)
+            inst.on_command_failure(456, 3.0, "duplicate key error")
+
+        assert len(captured) == 1
+        span = captured[0]
+        assert span["parent_span_id"] == root.span_id
+        assert span["status_code"] == "ERROR"
+        assert span["attributes"]["error.message"] == "duplicate key error"
+
     def test_ignores_untracked_request_id(self) -> None:
         captured: list[dict[str, Any]] = []
         inst = MongoInstrumentor(on_span=lambda s: captured.append(s))
-        # Success for a request_id that was never started
         inst.on_command_success(request_id=999, duration_ms=1.0)
         assert len(captured) == 0
 
@@ -198,3 +251,40 @@ class TestMongoInstrumentor:
         inst.on_command_start("find", "db", 1)
         inst.on_command_success(1, 1.0)
         inst.on_command_failure(2, 1.0, "err")
+
+
+# ---------------------------------------------------------------------------
+# Trace tree validation (FR57)
+# ---------------------------------------------------------------------------
+class TestTraceTreeHierarchy:
+    """Verify that DB child spans form a valid trace tree with root spans."""
+
+    def test_full_trace_tree_with_db_query(self) -> None:
+        """Root HTTP span + DB child span share trace_id and have correct parent chain."""
+        captured: list[dict[str, Any]] = []
+        inst = SQLAlchemyInstrumentor(on_span=lambda s: captured.append(s))
+
+        root = Span(name="GET /api/users", kind="SERVER", service_name="api")
+        with _span_context(root):
+            ctx = MagicMock()
+            inst.before_cursor_execute(
+                MagicMock(), MagicMock(),
+                "SELECT * FROM users", (), ctx, False,
+            )
+            inst.after_cursor_execute(
+                MagicMock(), MagicMock(),
+                "SELECT * FROM users", (), ctx, False,
+            )
+
+        root.end()
+        root_dict = root.to_dict()
+        db_dict = captured[0]
+
+        # Same trace
+        assert db_dict["trace_id"] == root_dict["trace_id"]
+        # DB span is child of root
+        assert db_dict["parent_span_id"] == root_dict["span_id"]
+        # Root has no parent
+        assert root_dict["parent_span_id"] is None
+        # Different span IDs
+        assert db_dict["span_id"] != root_dict["span_id"]

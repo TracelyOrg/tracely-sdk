@@ -1,5 +1,8 @@
 """Database query instrumentation for SQL and MongoDB.
 
+Creates child Span objects linked to the active root span via context
+propagation, enabling hierarchical trace trees (FR56, FR57).
+
 Provides instrumentors for:
 - SQLAlchemy (via before/after_cursor_execute events)
 - Django ORM (via query callback)
@@ -14,6 +17,9 @@ import logging
 import time
 from typing import Any, Callable
 
+from tracely.context import get_current_span
+from tracely.span import Span
+
 logger = logging.getLogger("tracely")
 
 
@@ -27,11 +33,10 @@ def _extract_operation(statement: str) -> str:
 
 
 class SQLAlchemyInstrumentor:
-    """Tracks SQLAlchemy query execution times.
+    """Tracks SQLAlchemy query execution as child spans.
 
-    Designed to be used with SQLAlchemy's event system:
-    - event.listen(engine, "before_cursor_execute", inst.before_cursor_execute)
-    - event.listen(engine, "after_cursor_execute", inst.after_cursor_execute)
+    Creates a child Span linked to the active root/parent span when a
+    query executes. If no active span exists, records a standalone dict.
     """
 
     def __init__(
@@ -39,7 +44,7 @@ class SQLAlchemyInstrumentor:
         on_span: Callable[[dict[str, Any]], None] | None = None,
     ) -> None:
         self._on_span = on_span
-        self._timings: dict[int, float] = {}
+        self._timings: dict[int, tuple[float, Span | None]] = {}
 
     def before_cursor_execute(
         self,
@@ -50,9 +55,21 @@ class SQLAlchemyInstrumentor:
         context: Any,
         executemany: bool,
     ) -> None:
-        """Record start time before query execution."""
+        """Record start time and create child span before query execution."""
         try:
-            self._timings[id(context)] = time.perf_counter()
+            parent = get_current_span()
+            span: Span | None = None
+            if parent is not None:
+                operation = _extract_operation(statement)
+                span = Span(
+                    name=f"SQL {operation}",
+                    parent=parent,
+                    kind="CLIENT",
+                )
+                span.set_attribute("db.system", "sql")
+                span.set_attribute("db.statement", statement)
+                span.set_attribute("db.operation", operation)
+            self._timings[id(context)] = (time.perf_counter(), span)
         except Exception:
             logger.debug("Error in before_cursor_execute", exc_info=True)
 
@@ -67,32 +84,35 @@ class SQLAlchemyInstrumentor:
     ) -> None:
         """Record query span after execution completes."""
         try:
-            start = self._timings.pop(id(context), None)
-            if start is None:
+            entry = self._timings.pop(id(context), None)
+            if entry is None:
                 return
 
+            start, span = entry
             elapsed_ms = (time.perf_counter() - start) * 1000
-            span_data: dict[str, Any] = {
-                "span_type": "db",
-                "db.system": "sql",
-                "db.statement": statement,
-                "db.operation": _extract_operation(statement),
-                "duration_ms": round(elapsed_ms, 3),
-                "error": False,
-            }
 
-            if self._on_span is not None:
-                self._on_span(span_data)
+            if span is not None:
+                span.set_attribute("duration_ms", str(round(elapsed_ms, 3)))
+                span.set_status("OK")
+                span.end()
+
+                if self._on_span is not None:
+                    self._on_span(span.to_dict())
+            elif self._on_span is not None:
+                self._on_span({
+                    "span_type": "db",
+                    "db.system": "sql",
+                    "db.statement": statement,
+                    "db.operation": _extract_operation(statement),
+                    "duration_ms": round(elapsed_ms, 3),
+                    "error": False,
+                })
         except Exception:
             logger.debug("Error in after_cursor_execute", exc_info=True)
 
 
 class DjangoORMInstrumentor:
-    """Tracks Django ORM query execution.
-
-    Designed to receive query data from Django's database instrumentation
-    or a custom CursorWrapper. Call on_query() for each completed query.
-    """
+    """Tracks Django ORM query execution as child spans."""
 
     def __init__(
         self,
@@ -106,32 +126,41 @@ class DjangoORMInstrumentor:
         duration_ms: float,
         vendor: str = "sql",
     ) -> None:
-        """Record a completed Django ORM query as a span."""
+        """Record a completed Django ORM query as a child span."""
         try:
-            span_data: dict[str, Any] = {
-                "span_type": "db",
-                "db.system": vendor,
-                "db.statement": sql,
-                "db.operation": _extract_operation(sql),
-                "duration_ms": round(duration_ms, 3),
-                "error": False,
-            }
+            parent = get_current_span()
+            operation = _extract_operation(sql)
 
-            if self._on_span is not None:
-                self._on_span(span_data)
+            if parent is not None:
+                span = Span(
+                    name=f"SQL {operation}",
+                    parent=parent,
+                    kind="CLIENT",
+                )
+                span.set_attribute("db.system", vendor)
+                span.set_attribute("db.statement", sql)
+                span.set_attribute("db.operation", operation)
+                span.set_attribute("duration_ms", str(round(duration_ms, 3)))
+                span.set_status("OK")
+                span.end()
+
+                if self._on_span is not None:
+                    self._on_span(span.to_dict())
+            elif self._on_span is not None:
+                self._on_span({
+                    "span_type": "db",
+                    "db.system": vendor,
+                    "db.statement": sql,
+                    "db.operation": operation,
+                    "duration_ms": round(duration_ms, 3),
+                    "error": False,
+                })
         except Exception:
             logger.debug("Error in DjangoORMInstrumentor.on_query", exc_info=True)
 
 
 class MongoInstrumentor:
-    """Tracks MongoDB command execution times.
-
-    Designed to be used as a pymongo CommandListener:
-    - on_command_start / on_command_success / on_command_failure
-
-    Maintains an in-flight map keyed by request_id to correlate
-    start and end events.
-    """
+    """Tracks MongoDB command execution as child spans."""
 
     def __init__(
         self,
@@ -146,12 +175,25 @@ class MongoInstrumentor:
         database_name: str,
         request_id: int,
     ) -> None:
-        """Record the start of a MongoDB command."""
+        """Record the start of a MongoDB command and create a child span."""
         try:
+            parent = get_current_span()
+            span: Span | None = None
+            if parent is not None:
+                span = Span(
+                    name=f"MongoDB {command_name}",
+                    parent=parent,
+                    kind="CLIENT",
+                )
+                span.set_attribute("db.system", "mongodb")
+                span.set_attribute("db.operation", command_name)
+                span.set_attribute("db.name", database_name)
+
             self._inflight[request_id] = {
                 "command_name": command_name,
                 "database_name": database_name,
                 "start": time.perf_counter(),
+                "span": span,
             }
         except Exception:
             logger.debug("Error in MongoInstrumentor.on_command_start", exc_info=True)
@@ -167,17 +209,23 @@ class MongoInstrumentor:
             if info is None:
                 return
 
-            span_data: dict[str, Any] = {
-                "span_type": "db",
-                "db.system": "mongodb",
-                "db.operation": info["command_name"],
-                "db.name": info["database_name"],
-                "duration_ms": round(duration_ms, 3),
-                "error": False,
-            }
+            span: Span | None = info.get("span")
+            if span is not None:
+                span.set_attribute("duration_ms", str(round(duration_ms, 3)))
+                span.set_status("OK")
+                span.end()
 
-            if self._on_span is not None:
-                self._on_span(span_data)
+                if self._on_span is not None:
+                    self._on_span(span.to_dict())
+            elif self._on_span is not None:
+                self._on_span({
+                    "span_type": "db",
+                    "db.system": "mongodb",
+                    "db.operation": info["command_name"],
+                    "db.name": info["database_name"],
+                    "duration_ms": round(duration_ms, 3),
+                    "error": False,
+                })
         except Exception:
             logger.debug("Error in MongoInstrumentor.on_command_success", exc_info=True)
 
@@ -193,17 +241,24 @@ class MongoInstrumentor:
             if info is None:
                 return
 
-            span_data: dict[str, Any] = {
-                "span_type": "db",
-                "db.system": "mongodb",
-                "db.operation": info["command_name"],
-                "db.name": info["database_name"],
-                "duration_ms": round(duration_ms, 3),
-                "error": True,
-                "error.message": failure,
-            }
+            span: Span | None = info.get("span")
+            if span is not None:
+                span.set_attribute("duration_ms", str(round(duration_ms, 3)))
+                span.set_attribute("error.message", failure)
+                span.set_status("ERROR", failure)
+                span.end()
 
-            if self._on_span is not None:
-                self._on_span(span_data)
+                if self._on_span is not None:
+                    self._on_span(span.to_dict())
+            elif self._on_span is not None:
+                self._on_span({
+                    "span_type": "db",
+                    "db.system": "mongodb",
+                    "db.operation": info["command_name"],
+                    "db.name": info["database_name"],
+                    "duration_ms": round(duration_ms, 3),
+                    "error": True,
+                    "error.message": failure,
+                })
         except Exception:
             logger.debug("Error in MongoInstrumentor.on_command_failure", exc_info=True)

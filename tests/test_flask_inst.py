@@ -1,4 +1,4 @@
-"""Tests for Flask auto-instrumentation (Story 2.2, Task 5)."""
+"""Tests for Flask auto-instrumentation (Story 2.2 + 2.3 span hierarchy)."""
 
 from __future__ import annotations
 
@@ -7,11 +7,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tracely.context import get_current_span
 from tracely.detection import FrameworkInfo
 from tracely.instrumentation.flask_inst import (
     FlaskInstrumentor,
     TracelyWSGIMiddleware,
 )
+from tracely.span import Span
 
 
 @pytest.fixture
@@ -58,6 +60,7 @@ class TestTracelyWSGIMiddleware:
         mw = TracelyWSGIMiddleware(
             app=app,
             on_span=lambda s: captured_spans.append(s),
+            service_name="flask-api",
         )
         environ = self._make_environ("GET", "/api/users")
         start_resp, _ = self._make_start_response()
@@ -66,37 +69,45 @@ class TestTracelyWSGIMiddleware:
         assert result == [b"Hello"]
         assert len(captured_spans) == 1
         span = captured_spans[0]
-        assert span["http.method"] == "GET"
-        assert span["http.route"] == "/api/users"
-        assert span["http.status_code"] == 200
+        assert span["attributes"]["http.method"] == "GET"
+        assert span["attributes"]["http.route"] == "/api/users"
+        assert span["attributes"]["http.status_code"] == "200"
         assert span["duration_ms"] >= 0
-        assert span["span_type"] == "http"
+        assert span["span_type"] == "span"
+
+    def test_span_has_trace_id_and_span_id(self, captured_spans: list[dict]) -> None:
+        """Root span has unique trace_id and span_id (FR55)."""
+
+        def app(environ: dict, start_response: Any) -> list[bytes]:
+            start_response("200 OK", [])
+            return [b"OK"]
+
+        mw = TracelyWSGIMiddleware(app=app, on_span=lambda s: captured_spans.append(s))
+        list(mw(self._make_environ(), MagicMock()))
+        span = captured_spans[0]
+        assert len(span["trace_id"]) == 32
+        assert len(span["span_id"]) == 16
+        assert span["parent_span_id"] is None
 
     def test_captures_post_404(self, captured_spans: list[dict]) -> None:
         def app(environ: dict, start_response: Any) -> list[bytes]:
             start_response("404 Not Found", [])
             return [b"Not Found"]
 
-        mw = TracelyWSGIMiddleware(
-            app=app,
-            on_span=lambda s: captured_spans.append(s),
-        )
-        result = list(mw(self._make_environ("POST", "/missing"), MagicMock()))
-        assert captured_spans[0]["http.method"] == "POST"
-        assert captured_spans[0]["http.status_code"] == 404
+        mw = TracelyWSGIMiddleware(app=app, on_span=lambda s: captured_spans.append(s))
+        list(mw(self._make_environ("POST", "/missing"), MagicMock()))
+        assert captured_spans[0]["attributes"]["http.method"] == "POST"
+        assert captured_spans[0]["attributes"]["http.status_code"] == "404"
 
     def test_captures_query_string(self, captured_spans: list[dict]) -> None:
         def app(environ: dict, start_response: Any) -> list[bytes]:
             start_response("200 OK", [])
             return [b"OK"]
 
-        mw = TracelyWSGIMiddleware(
-            app=app,
-            on_span=lambda s: captured_spans.append(s),
-        )
+        mw = TracelyWSGIMiddleware(app=app, on_span=lambda s: captured_spans.append(s))
         environ = self._make_environ("GET", "/search", query="q=test")
         list(mw(environ, MagicMock()))
-        assert captured_spans[0]["http.query"] == "q=test"
+        assert captured_spans[0]["attributes"]["http.query"] == "q=test"
 
     def test_captures_exception(self, captured_spans: list[dict]) -> None:
         """If app raises, middleware records span with error info."""
@@ -104,28 +115,38 @@ class TestTracelyWSGIMiddleware:
         def app(environ: dict, start_response: Any) -> list[bytes]:
             raise ValueError("boom")
 
-        mw = TracelyWSGIMiddleware(
-            app=app,
-            on_span=lambda s: captured_spans.append(s),
-        )
+        mw = TracelyWSGIMiddleware(app=app, on_span=lambda s: captured_spans.append(s))
         with pytest.raises(ValueError, match="boom"):
             list(mw(self._make_environ(), MagicMock()))
 
         assert len(captured_spans) == 1
-        assert captured_spans[0]["error"] is True
-        assert "ValueError" in captured_spans[0]["error.type"]
+        assert captured_spans[0]["attributes"]["error"] == "true"
+        assert captured_spans[0]["attributes"]["error.type"] == "ValueError"
+        assert captured_spans[0]["status_code"] == "ERROR"
 
     def test_captures_500_status(self, captured_spans: list[dict]) -> None:
         def app(environ: dict, start_response: Any) -> list[bytes]:
             start_response("500 Internal Server Error", [])
             return [b"error"]
 
-        mw = TracelyWSGIMiddleware(
-            app=app,
-            on_span=lambda s: captured_spans.append(s),
-        )
+        mw = TracelyWSGIMiddleware(app=app, on_span=lambda s: captured_spans.append(s))
         list(mw(self._make_environ(), MagicMock()))
-        assert captured_spans[0]["http.status_code"] == 500
+        assert captured_spans[0]["attributes"]["http.status_code"] == "500"
+
+    def test_context_propagation_during_request(self) -> None:
+        """Root span is active during request processing."""
+        active_spans: list[Span | None] = []
+
+        def app(environ: dict, start_response: Any) -> list[bytes]:
+            active_spans.append(get_current_span())
+            start_response("200 OK", [])
+            return [b"OK"]
+
+        mw = TracelyWSGIMiddleware(app=app)
+        list(mw(self._make_environ("GET", "/test"), MagicMock()))
+        assert len(active_spans) == 1
+        assert isinstance(active_spans[0], Span)
+        assert active_spans[0].name == "GET /test"
 
 
 class TestFlaskInstrumentor:
