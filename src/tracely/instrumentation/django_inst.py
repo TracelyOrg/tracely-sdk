@@ -14,6 +14,7 @@ from tracely.capture import build_url, capture_request_data, capture_response_da
 from tracely.context import _span_context
 from tracely.instrumentation.base import BaseInstrumentor
 from tracely.span import Span
+from tracely.span_processor import on_span_end, on_span_start
 
 logger = logging.getLogger("tracely")
 
@@ -76,10 +77,13 @@ class TracelyDjangoMiddleware:
             name=f"{method} {path}",
             kind="SERVER",
             service_name=self._service_name,
-            on_end=self._on_end,
+            on_end=self._on_end or on_span_end,
         )
         span.set_attribute("http.route", path)
         span.set_attribute("http.query", query)
+
+        # AR3: Export pending_span immediately for real-time dashboard
+        on_span_start(span)
 
         with _span_context(span):
             try:

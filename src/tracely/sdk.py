@@ -6,9 +6,12 @@ import logging
 
 from tracely.config import TracelyConfig
 from tracely.detection import FrameworkInfo, detect_framework
+from tracely.exporter import BatchSpanExporter
 from tracely.instrumentation import get_instrumentor
 from tracely.instrumentation.base import BaseInstrumentor
 from tracely.redaction import configure_redaction
+from tracely.span_processor import SpanProcessor, set_processor
+from tracely.transport import HttpTransport, SpanBuffer
 
 logger = logging.getLogger("tracely")
 
@@ -23,19 +26,39 @@ class TracelySdk:
         config: TracelyConfig,
         framework_info: FrameworkInfo | None = None,
         instrumentor: BaseInstrumentor | None = None,
+        buffer: SpanBuffer | None = None,
+        transport: HttpTransport | None = None,
+        processor: SpanProcessor | None = None,
+        exporter: BatchSpanExporter | None = None,
     ) -> None:
         self.config = config
         self.enabled = config.enabled
         self.framework_info = framework_info
         self.instrumentor = instrumentor
+        self.buffer = buffer
+        self.transport = transport
+        self.processor = processor
+        self.exporter = exporter
 
     def shutdown(self) -> None:
         """Flush buffers, deactivate instrumentation, release resources."""
+        # Stop batch exporter (flushes remaining spans)
+        if self.exporter is not None:
+            try:
+                self.exporter.stop()
+            except Exception:
+                logger.debug("Error stopping exporter", exc_info=True)
+
+        # Deactivate instrumentation
         if self.instrumentor is not None:
             try:
                 self.instrumentor.deactivate()
             except Exception:
                 logger.debug("Error deactivating instrumentor", exc_info=True)
+
+        # Clear global processor
+        set_processor(None)
+
         self.enabled = False
 
 
@@ -51,6 +74,9 @@ def init(
 
     Reads configuration from environment variables by default.
     Explicit parameters override env vars.
+
+    When enabled (API key present), creates the full export pipeline:
+    SpanBuffer → SpanProcessor → BatchSpanExporter → HttpTransport → OTLP/HTTP
 
     Args:
         api_key: Override TRACELY_API_KEY env var.
@@ -89,6 +115,30 @@ def init(
     # Detect framework (always, even when disabled — for diagnostics)
     framework_info = detect_framework()
 
+    # Create export pipeline when SDK is enabled
+    buffer: SpanBuffer | None = None
+    transport: HttpTransport | None = None
+    processor: SpanProcessor | None = None
+    exporter: BatchSpanExporter | None = None
+
+    if config.enabled and config.api_key:
+        buffer = SpanBuffer()
+        transport = HttpTransport(
+            endpoint=config.endpoint,
+            api_key=config.api_key,
+        )
+        processor = SpanProcessor(buffer=buffer)
+        exporter = BatchSpanExporter(buffer=buffer, transport=transport)
+
+        # Register global processor for middleware to use
+        set_processor(processor)
+
+        # Start background export thread
+        try:
+            exporter.start()
+        except Exception:
+            logger.debug("Error starting batch exporter", exc_info=True)
+
     # Activate instrumentation only when SDK is enabled
     instrumentor: BaseInstrumentor | None = None
     if config.enabled and framework_info is not None:
@@ -112,6 +162,10 @@ def init(
         config=config,
         framework_info=framework_info,
         instrumentor=instrumentor,
+        buffer=buffer,
+        transport=transport,
+        processor=processor,
+        exporter=exporter,
     )
 
 
@@ -132,4 +186,7 @@ def _sdk_instance() -> TracelySdk | None:
 def _reset() -> None:
     """Reset SDK state (for testing only)."""
     global _instance
+    if _instance is not None:
+        _instance.shutdown()
     _instance = None
+    set_processor(None)

@@ -77,16 +77,19 @@ class HttpTransport:
             timeout=httpx.Timeout(10.0),
             headers={
                 "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
+                "Content-Type": "application/x-protobuf",
             },
         )
 
-    async def send(self, spans: list[dict[str, Any]]) -> bool:
-        """Send spans to the API. Returns True on success, False on failure.
+    async def send(self, payload: bytes) -> bool:
+        """Send OTLP protobuf payload to the API. Returns True on success.
 
-        Never raises — all exceptions are caught and logged.
+        Args:
+            payload: Serialized OTLP ExportTraceServiceRequest bytes.
+
+        Never raises — all exceptions are caught and logged (FR10, NFR22).
         """
-        if not spans:
+        if not payload:
             return True
 
         url = f"{self._endpoint}/v1/traces"
@@ -95,7 +98,7 @@ class HttpTransport:
 
         while attempt < max_attempts:
             try:
-                response = await self._client.post(url, json=spans)
+                response = await self._client.post(url, content=payload)
                 response.raise_for_status()
                 return True
             except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException, ConnectionError, OSError) as exc:

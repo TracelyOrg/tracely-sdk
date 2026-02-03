@@ -11,6 +11,7 @@ from typing import Any, Callable, Generator
 
 from tracely.context import get_current_span, _span_context
 from tracely.span import Span
+from tracely.span_processor import on_span_end, on_span_start
 
 
 @contextmanager
@@ -45,8 +46,11 @@ def span(
         parent=parent,
         kind=kind,
         service_name=service_name,
-        on_end=on_end,
+        on_end=on_end or on_span_end,
     )
+
+    # AR3: Export pending_span immediately for real-time dashboard
+    on_span_start(s)
 
     with _span_context(s):
         try:

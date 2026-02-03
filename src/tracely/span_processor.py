@@ -3,6 +3,9 @@
 Exports spans to SpanBuffer on both start (pending_span) and end (span),
 enabling real-time dashboard updates for in-progress requests.
 
+Also provides a global processor registry so middleware and the tracing API
+can call on_start/on_end without direct references to the processor instance.
+
 All operations are fail-silent — never crashes the host application.
 """
 
@@ -16,6 +19,41 @@ if TYPE_CHECKING:
     from tracely.transport import SpanBuffer
 
 logger = logging.getLogger("tracely")
+
+# Global processor instance, set by SDK init()
+_processor: SpanProcessor | None = None
+
+
+def set_processor(processor: SpanProcessor | None) -> None:
+    """Register the global span processor (called by SDK init)."""
+    global _processor
+    _processor = processor
+
+
+def get_processor() -> SpanProcessor | None:
+    """Get the global span processor."""
+    return _processor
+
+
+def on_span_start(span: Span) -> None:
+    """Notify the global processor that a span has started.
+
+    No-op if no processor is registered (SDK disabled).
+    """
+    proc = _processor
+    if proc is not None:
+        proc.on_start(span)
+
+
+def on_span_end(span: Span) -> None:
+    """Notify the global processor that a span has ended.
+
+    No-op if no processor is registered (SDK disabled).
+    Suitable as Span's on_end callback.
+    """
+    proc = _processor
+    if proc is not None:
+        proc.on_end(span)
 
 
 class SpanProcessor:
