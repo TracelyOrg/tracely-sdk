@@ -1,9 +1,8 @@
 name: Release to PyPI
 
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
 permissions:
   contents: write
@@ -56,45 +55,29 @@ jobs:
           name: dist
           path: dist/
 
-  create-release:
-    name: Create GitHub Release with auto-generated notes
+  attach-assets:
+    name: Attach build artifacts to release
     needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           name: dist
           path: dist/
 
-      - name: Create GitHub Release
+      - name: Upload assets to GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          generate_release_notes: true
-          make_latest: true
           files: |
             dist/*.whl
             dist/*.tar.gz
-          body: |
-            ## Install
-
-            ```bash
-            pip install tracely-sdk==${{ github.ref_name }}
-            ```
-
-            ---
-
-            ## What's Changed
 
   publish-pypi:
     name: Publish to PyPI
-    needs: [build, create-release]
+    needs: build
     runs-on: ubuntu-latest
     environment:
       name: pypi
