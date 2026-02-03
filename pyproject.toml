@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
 
 [project]
 name = "tracely-sdk"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Lightweight observability SDK for Python web frameworks. Auto-instruments FastAPI, Flask, and Django with real-time tracing via OTLP/HTTP."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -46,6 +46,13 @@ Homepage = "https://tracely.sh"
 Documentation = "https://docs.tracely.sh"
 Repository = "https://github.com/TracelyOrg/tracely-sdk"
 Issues = "https://github.com/TracelyOrg/tracely-sdk/issues"
+
+[tool.hatch.version]
+source = "vcs"
+raw-options = { root = "." }
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/tracely/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tracely"]

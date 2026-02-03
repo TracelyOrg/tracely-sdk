@@ -16,7 +16,7 @@ def test_version_available():
 
     assert hasattr(tracely, "__version__")
     assert isinstance(tracely.__version__, str)
-    assert tracely.__version__ == "0.1.0"
+    assert len(tracely.__version__) > 0
 
 
 def test_init_exported():

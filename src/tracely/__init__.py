@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-__version__ = "0.1.0"
+try:
+    from tracely._version import __version__
+except ImportError:
+    __version__ = "0.0.0-dev"
 
 from tracely.sdk import init, shutdown
 from tracely.tracing import span
