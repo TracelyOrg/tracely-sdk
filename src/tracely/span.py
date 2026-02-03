@@ -49,6 +49,7 @@ class Span:
         "status_code",
         "status_message",
         "attributes",
+        "events",
         "_on_end",
         "_ended",
     )
@@ -81,6 +82,7 @@ class Span:
         self.status_code: str = "UNSET"
         self.status_message: str = ""
         self.attributes: dict[str, str] = {}
+        self.events: list[dict[str, Any]] = []
         self._on_end = on_end
         self._ended = False
 
@@ -92,6 +94,31 @@ class Span:
         if self._ended:
             return
         self.attributes[key] = str(value)
+
+    def add_event(
+        self,
+        message: str,
+        *,
+        level: str = "INFO",
+        attributes: dict[str, str] | None = None,
+    ) -> None:
+        """Add a log event to this span.
+
+        No-op if span is already ended.
+
+        Args:
+            message: Human-readable event message.
+            level: Log level (DEBUG, INFO, WARNING, ERROR).
+            attributes: Optional key-value metadata for this event.
+        """
+        if self._ended:
+            return
+        self.events.append({
+            "timestamp": time.time(),
+            "level": level,
+            "message": message,
+            "attributes": dict(attributes) if attributes else {},
+        })
 
     def set_status(self, code: str, message: str = "") -> None:
         """Set the span's status code and optional message.
@@ -136,4 +163,6 @@ class Span:
             "status_code": self.status_code,
             "status_message": self.status_message,
             "attributes": dict(self.attributes),
+            "events": list(self.events),
+            "event_count": len(self.events),
         }
