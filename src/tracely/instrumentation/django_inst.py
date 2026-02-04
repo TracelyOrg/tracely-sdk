@@ -66,6 +66,27 @@ def _resolve_django_route(path: str) -> dict[str, str]:
         return {}
 
 
+def _is_excluded(path: str, excluded_urls: list[str]) -> bool:
+    """Check whether *path* matches any entry in *excluded_urls*.
+
+    Each entry can be a plain prefix (e.g. ``"/health"``) or a regex
+    pattern (e.g. ``"^/internal/.*"``).  Plain strings are matched as
+    prefixes; if an entry starts with ``^`` it is treated as a regex.
+    """
+    for pattern in excluded_urls:
+        if pattern.startswith("^"):
+            import re
+            if re.search(pattern, path):
+                return True
+        elif path.startswith(pattern):
+            return True
+    return False
+
+
+# Module-level excluded URLs list, set by instrument_django()
+_excluded_urls: list[str] = []
+
+
 class TracelyDjangoMiddleware:
     """Django middleware that creates root spans for HTTP requests.
 
@@ -95,6 +116,10 @@ class TracelyDjangoMiddleware:
     def __call__(self, request: Any) -> Any:
         method = getattr(request, "method", "UNKNOWN")
         path = getattr(request, "path", "/")
+
+        # Skip instrumentation for excluded URLs
+        if _excluded_urls and _is_excluded(path, _excluded_urls):
+            return self.get_response(request)
         meta = getattr(request, "META", {})
         query = meta.get("QUERY_STRING", "")
 
@@ -193,7 +218,11 @@ class TracelyDjangoMiddleware:
                         logger.debug("Error in on_span callback", exc_info=True)
 
 
-def instrument_django(*, service_name: str | None = None) -> None:
+def instrument_django(
+    *,
+    service_name: str | None = None,
+    excluded_urls: list[str] | None = None,
+) -> None:
     """Instrument a Django application with Tracely tracing.
 
     Programmatically inserts TracelyDjangoMiddleware at the top of
@@ -202,7 +231,14 @@ def instrument_django(*, service_name: str | None = None) -> None:
 
     Args:
         service_name: Override the service name from tracely.init() config.
+        excluded_urls: URL paths to exclude from tracing. Each entry can be
+            a plain prefix (e.g. ``"/health"``) or a regex pattern starting
+            with ``^`` (e.g. ``"^/internal/.*"``).
     """
+    global _excluded_urls
+    if excluded_urls:
+        _excluded_urls = list(excluded_urls)
+
     from django.conf import settings
 
     mw = "tracely.instrumentation.django_inst.TracelyDjangoMiddleware"

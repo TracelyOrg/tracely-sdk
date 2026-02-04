@@ -108,6 +108,9 @@ class TestTracelyDjangoMiddleware:
         assert captured_spans[0]["attributes"]["error"] == "true"
         assert captured_spans[0]["attributes"]["error.type"] == "RuntimeError"
         assert captured_spans[0]["status_code"] == "ERROR"
+        # Unhandled exception should be recorded as HTTP 500
+        assert captured_spans[0]["attributes"]["http.status_code"] == "500"
+        assert "exception.stacktrace" in captured_spans[0]["attributes"]
 
     def test_captures_500_status(self, captured_spans: list[dict]) -> None:
         def get_response(req: Any) -> Any:

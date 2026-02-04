@@ -96,6 +96,23 @@ def _resolve_flask_route(app: Any, path: str, method: str) -> dict[str, str]:
         return {}
 
 
+def _is_excluded(path: str, excluded_urls: list[str]) -> bool:
+    """Check whether *path* matches any entry in *excluded_urls*.
+
+    Each entry can be a plain prefix (e.g. ``"/health"``) or a regex
+    pattern (e.g. ``"^/internal/.*"``).  Plain strings are matched as
+    prefixes; if an entry starts with ``^`` it is treated as a regex.
+    """
+    for pattern in excluded_urls:
+        if pattern.startswith("^"):
+            import re
+            if re.search(pattern, path):
+                return True
+        elif path.startswith(pattern):
+            return True
+    return False
+
+
 class TracelyWSGIMiddleware:
     """WSGI middleware that creates root spans for HTTP requests.
 
@@ -111,6 +128,7 @@ class TracelyWSGIMiddleware:
         service_name: str | None = None,
         on_end: Callable[[Span], None] | None = None,
         app_ref: Any | None = None,
+        excluded_urls: list[str] | None = None,
     ) -> None:
         self.app = app
         self._on_span = on_span
@@ -123,6 +141,7 @@ class TracelyWSGIMiddleware:
         self._service_name = service_name
         self._on_end = on_end
         self._app_ref = app_ref
+        self._excluded_urls = excluded_urls or []
 
     def __call__(
         self,
@@ -131,6 +150,10 @@ class TracelyWSGIMiddleware:
     ) -> Iterable[bytes]:
         method = environ.get("REQUEST_METHOD", "UNKNOWN")
         path = environ.get("PATH_INFO", "/")
+
+        # Skip instrumentation for excluded URLs
+        if self._excluded_urls and _is_excluded(path, self._excluded_urls):
+            return self.app(environ, start_response)
         query = environ.get("QUERY_STRING", "")
 
         # Build full URL
@@ -246,7 +269,12 @@ class TracelyWSGIMiddleware:
                         logger.debug("Error in on_span callback", exc_info=True)
 
 
-def instrument_flask(app: Any, *, service_name: str | None = None) -> None:
+def instrument_flask(
+    app: Any,
+    *,
+    service_name: str | None = None,
+    excluded_urls: list[str] | None = None,
+) -> None:
     """Instrument a Flask application with Tracely tracing.
 
     Wraps the Flask app's WSGI app with TracelyWSGIMiddleware, providing
@@ -256,6 +284,9 @@ def instrument_flask(app: Any, *, service_name: str | None = None) -> None:
     Args:
         app: A Flask application instance.
         service_name: Override the service name from tracely.init() config.
+        excluded_urls: URL paths to exclude from tracing. Each entry can be
+            a plain prefix (e.g. ``"/health"``) or a regex pattern starting
+            with ``^`` (e.g. ``"^/internal/.*"``).
     """
     from tracely.sdk import _sdk_instance
 
@@ -263,4 +294,5 @@ def instrument_flask(app: Any, *, service_name: str | None = None) -> None:
     svc = service_name or (inst.config.service_name if inst else None)
     app.wsgi_app = TracelyWSGIMiddleware(
         app.wsgi_app, service_name=svc, app_ref=app,
+        excluded_urls=excluded_urls,
     )

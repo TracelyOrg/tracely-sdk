@@ -73,6 +73,23 @@ def _resolve_route(app: Any, scope: Scope) -> dict[str, str]:
     return {}
 
 
+def _is_excluded(path: str, excluded_urls: list[str]) -> bool:
+    """Check whether *path* matches any entry in *excluded_urls*.
+
+    Each entry can be a plain prefix (e.g. ``"/health"``) or a regex
+    pattern (e.g. ``"^/internal/.*"``).  Plain strings are matched as
+    prefixes; if an entry starts with ``^`` it is treated as a regex.
+    """
+    for pattern in excluded_urls:
+        if pattern.startswith("^"):
+            import re
+            if re.search(pattern, path):
+                return True
+        elif path.startswith(pattern):
+            return True
+    return False
+
+
 class TracelyASGIMiddleware:
     """ASGI middleware that creates root spans for HTTP requests.
 
@@ -89,6 +106,7 @@ class TracelyASGIMiddleware:
         service_name: str | None = None,
         on_end: Callable[[Span], None] | None = None,
         app_ref: Any | None = None,
+        excluded_urls: list[str] | None = None,
     ) -> None:
         self.app = app
         self._on_span = on_span
@@ -101,14 +119,20 @@ class TracelyASGIMiddleware:
         self._service_name = service_name
         self._on_end = on_end
         self._app_ref = app_ref
+        self._excluded_urls = excluded_urls or []
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
 
-        method = scope.get("method", "UNKNOWN")
+        # Skip instrumentation for excluded URLs
         path = scope.get("path", "/")
+        if self._excluded_urls and _is_excluded(path, self._excluded_urls):
+            await self.app(scope, receive, send)
+            return
+
+        method = scope.get("method", "UNKNOWN")
         query = scope.get("query_string", b"").decode("utf-8", errors="replace")
         raw_headers: list[tuple[bytes, bytes]] = scope.get("headers", [])
 
@@ -235,7 +259,12 @@ class TracelyASGIMiddleware:
                         logger.debug("Error in on_span callback", exc_info=True)
 
 
-def instrument_fastapi(app: Any, *, service_name: str | None = None) -> None:
+def instrument_fastapi(
+    app: Any,
+    *,
+    service_name: str | None = None,
+    excluded_urls: list[str] | None = None,
+) -> None:
     """Instrument a FastAPI application with Tracely tracing.
 
     Adds TracelyASGIMiddleware to the app with full route resolution,
@@ -244,9 +273,17 @@ def instrument_fastapi(app: Any, *, service_name: str | None = None) -> None:
     Args:
         app: A FastAPI application instance.
         service_name: Override the service name from tracely.init() config.
+        excluded_urls: URL paths to exclude from tracing. Each entry can be
+            a plain prefix (e.g. ``"/health"``) or a regex pattern starting
+            with ``^`` (e.g. ``"^/internal/.*"``).
     """
     from tracely.sdk import _sdk_instance
 
     inst = _sdk_instance()
     svc = service_name or (inst.config.service_name if inst else None)
-    app.add_middleware(TracelyASGIMiddleware, service_name=svc, app_ref=app)
+    app.add_middleware(
+        TracelyASGIMiddleware,
+        service_name=svc,
+        app_ref=app,
+        excluded_urls=excluded_urls,
+    )

@@ -188,6 +188,9 @@ class TestTracelyASGIMiddleware:
         assert captured[0]["attributes"]["error"] == "true"
         assert captured[0]["attributes"]["error.type"] == "ValueError"
         assert captured[0]["status_code"] == "ERROR"
+        # Unhandled exception should be recorded as HTTP 500
+        assert captured[0]["attributes"]["http.status_code"] == "500"
+        assert "exception.stacktrace" in captured[0]["attributes"]
 
     @pytest.mark.asyncio
     async def test_span_type_is_span(self, middleware: TracelyASGIMiddleware, captured_spans: list[dict]) -> None:
