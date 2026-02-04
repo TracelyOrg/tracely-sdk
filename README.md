@@ -153,7 +153,7 @@ Middleware (FastAPI/Flask/Django)
 
 ## Documentation
 
-Full docs at [docs.tracely.sh](https://docs.tracely.sh)
+Full docs at [tracely.sh/docs](https://tracely.sh/docs)
 
 ## License
 
