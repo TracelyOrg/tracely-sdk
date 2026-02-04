@@ -11,6 +11,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import traceback
 from typing import Any, Callable, Iterable
 
 from tracely.capture import build_url, capture_request_data, capture_response_data
@@ -196,17 +197,30 @@ class TracelyWSGIMiddleware:
             return start_response(status, headers, exc_info)
 
         with _span_context(span):
+            response_body = b""
+            collected: list[bytes] = []
             try:
                 result = self.app(environ, wrapped_start_response)
                 # Collect response body
                 response_body_chunks: list[bytes] = []
-                collected: list[bytes] = []
                 for chunk in result:
                     collected.append(chunk)
                     response_body_chunks.append(chunk)
                 response_body = b"".join(response_body_chunks)
-
-                # Capture request data (FR6)
+                return collected
+            except Exception as exc:
+                span.set_status("ERROR", str(exc))
+                span.set_attribute("error", "true")
+                span.set_attribute("error.type", type(exc).__name__)
+                span.set_attribute("error.message", str(exc))
+                span.set_attribute("exception.stacktrace", traceback.format_exc())
+                # If the exception occurred before start_response was called,
+                # status_code is still 0. An unhandled exception means 500.
+                if status_code == 0:
+                    status_code = 500
+                raise
+            finally:
+                # Capture request data (FR6) — always, even on error
                 capture_request_data(
                     span,
                     method=method,
@@ -216,8 +230,7 @@ class TracelyWSGIMiddleware:
                     content_type=req_content_type,
                     query_params=query,
                 )
-
-                # Capture response data (FR7)
+                # Capture response data (FR7) — always, even on error
                 capture_response_data(
                     span,
                     status_code=status_code,
@@ -225,16 +238,6 @@ class TracelyWSGIMiddleware:
                     body=response_body,
                     content_type=resp_content_type,
                 )
-
-                return collected
-            except Exception as exc:
-                span.set_status("ERROR", str(exc))
-                span.set_attribute("error", "true")
-                span.set_attribute("error.type", type(exc).__name__)
-                span.set_attribute("error.message", str(exc))
-                raise
-            finally:
-                span.set_attribute("http.status_code", str(status_code))
                 span.end()
                 if self._on_span is not None:
                     try:

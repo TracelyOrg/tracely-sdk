@@ -10,6 +10,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import traceback
 from typing import Any, Callable
 
 from tracely.capture import build_url, capture_request_data, capture_response_data
@@ -130,6 +131,11 @@ class TracelyDjangoMiddleware:
         on_span_start(span)
 
         with _span_context(span):
+            status_code = 0
+            resp_headers_dict: dict[str, str] = {}
+            resp_content_type = ""
+            resp_body: bytes = b""
+            response = None
             try:
                 response = self.get_response(request)
 
@@ -139,7 +145,6 @@ class TracelyDjangoMiddleware:
                     span.set_attribute(key, value)
 
                 # Extract response data
-                resp_headers_dict: dict[str, str] = {}
                 try:
                     for name, value in response.items():
                         resp_headers_dict[str(name).lower()] = str(value)
@@ -147,8 +152,22 @@ class TracelyDjangoMiddleware:
                     pass
                 resp_content_type = resp_headers_dict.get("content-type", "")
                 resp_body = getattr(response, "content", b"")
+                status_code = getattr(response, "status_code", 0)
 
-                # Capture request data (FR6)
+                return response
+            except Exception as exc:
+                span.set_status("ERROR", str(exc))
+                span.set_attribute("error", "true")
+                span.set_attribute("error.type", type(exc).__name__)
+                span.set_attribute("error.message", str(exc))
+                span.set_attribute("exception.stacktrace", traceback.format_exc())
+                # If the exception occurred before we got a response,
+                # status_code is still 0. An unhandled exception means 500.
+                if status_code == 0:
+                    status_code = 500
+                raise
+            finally:
+                # Capture request data (FR6) — always, even on error
                 capture_request_data(
                     span,
                     method=method,
@@ -158,24 +177,14 @@ class TracelyDjangoMiddleware:
                     content_type=req_content_type,
                     query_params=query,
                 )
-
-                # Capture response data (FR7)
+                # Capture response data (FR7) — always, even on error
                 capture_response_data(
                     span,
-                    status_code=getattr(response, "status_code", 0),
+                    status_code=status_code,
                     headers=resp_headers_dict,
                     body=resp_body,
                     content_type=resp_content_type,
                 )
-
-                return response
-            except Exception as exc:
-                span.set_status("ERROR", str(exc))
-                span.set_attribute("error", "true")
-                span.set_attribute("error.type", type(exc).__name__)
-                span.set_attribute("error.message", str(exc))
-                raise
-            finally:
                 span.end()
                 if self._on_span is not None:
                     try:

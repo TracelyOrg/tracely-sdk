@@ -10,6 +10,7 @@ from __future__ import annotations
 import inspect
 import json
 import logging
+import traceback
 from typing import Any, Callable
 
 from tracely.capture import build_url, capture_request_data, capture_response_data
@@ -197,6 +198,12 @@ class TracelyASGIMiddleware:
                 span.set_attribute("error", "true")
                 span.set_attribute("error.type", type(exc).__name__)
                 span.set_attribute("error.message", str(exc))
+                span.set_attribute("exception.stacktrace", traceback.format_exc())
+                # If the exception occurred before the framework sent a
+                # response (send_wrapper never called), status_code is still 0.
+                # An unhandled server exception means 500.
+                if status_code == 0:
+                    status_code = 500
                 raise
             finally:
                 # Capture request data (FR6)
