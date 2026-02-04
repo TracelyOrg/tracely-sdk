@@ -33,7 +33,11 @@ logging.basicConfig(level=logging.DEBUG)
 logging.getLogger("tracely").setLevel(logging.DEBUG)
 
 # Initialize the SDK -- reads TRACELY_API_KEY and TRACELY_ENDPOINT from env
-tracely.init()
+tracely.init(
+    environment="dev",
+    service_name="api",
+    service_version="1.0.0",
+)
 
 app = FastAPI(title="Tracely SDK Test App")
 
