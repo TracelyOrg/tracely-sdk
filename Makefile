@@ -1,4 +1,4 @@
-.PHONY: install example test lint clean
+.PHONY: install example test lint clean release
 
 # ── Setup ─────────────────────────────────────────────────
 install:
@@ -11,6 +11,14 @@ example:
 # ── Tests ─────────────────────────────────────────────────
 test:
 	.venv/bin/pytest tests/ -v
+
+# ── Release ───────────────────────────────────────────────
+release:
+ifndef VERSION
+	$(error VERSION is required. Usage: make release VERSION=0.1.0)
+endif
+	git tag -a "v$(VERSION)" -m "Release v$(VERSION)"
+	git push origin "v$(VERSION)"
 
 # ── Clean ─────────────────────────────────────────────────
 clean:
