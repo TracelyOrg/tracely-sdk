@@ -7,8 +7,6 @@ import logging
 from tracely.config import TracelyConfig
 from tracely.detection import FrameworkInfo, detect_framework
 from tracely.exporter import BatchSpanExporter
-from tracely.instrumentation import get_instrumentor
-from tracely.instrumentation.base import BaseInstrumentor
 from tracely.redaction import configure_redaction
 from tracely.span_processor import SpanProcessor, set_processor
 from tracely.transport import HttpTransport, SpanBuffer
@@ -25,7 +23,6 @@ class TracelySdk:
         self,
         config: TracelyConfig,
         framework_info: FrameworkInfo | None = None,
-        instrumentor: BaseInstrumentor | None = None,
         buffer: SpanBuffer | None = None,
         transport: HttpTransport | None = None,
         processor: SpanProcessor | None = None,
@@ -34,27 +31,19 @@ class TracelySdk:
         self.config = config
         self.enabled = config.enabled
         self.framework_info = framework_info
-        self.instrumentor = instrumentor
         self.buffer = buffer
         self.transport = transport
         self.processor = processor
         self.exporter = exporter
 
     def shutdown(self) -> None:
-        """Flush buffers, deactivate instrumentation, release resources."""
+        """Flush buffers and release resources."""
         # Stop batch exporter (flushes remaining spans)
         if self.exporter is not None:
             try:
                 self.exporter.stop()
             except Exception:
                 logger.debug("Error stopping exporter", exc_info=True)
-
-        # Deactivate instrumentation
-        if self.instrumentor is not None:
-            try:
-                self.instrumentor.deactivate()
-            except Exception:
-                logger.debug("Error deactivating instrumentor", exc_info=True)
 
         # Clear global processor
         set_processor(None)
@@ -77,6 +66,8 @@ def init(
 
     When enabled (API key present), creates the full export pipeline:
     SpanBuffer → SpanProcessor → BatchSpanExporter → HttpTransport → OTLP/HTTP
+
+    Instrumentation is now explicit via instrument_fastapi/flask/django().
 
     Args:
         api_key: Override TRACELY_API_KEY env var.
@@ -139,29 +130,17 @@ def init(
         except Exception:
             logger.debug("Error starting batch exporter", exc_info=True)
 
-    # Activate instrumentation only when SDK is enabled
-    instrumentor: BaseInstrumentor | None = None
-    if config.enabled and framework_info is not None:
-        instrumentor = get_instrumentor(framework_info)
-        if instrumentor is not None:
-            try:
-                instrumentor.activate()
-            except Exception:
-                logger.debug("Error activating instrumentor", exc_info=True)
-                instrumentor = None
-
     if framework_info is not None:
         logger.info("TRACELY: Detected framework: %s", framework_info.name)
     else:
         logger.info(
             "TRACELY: No supported framework detected. "
-            "Use manual instrumentation for custom setups."
+            "Use tracely.instrument_*() for explicit instrumentation."
         )
 
     _instance = TracelySdk(
         config=config,
         framework_info=framework_info,
-        instrumentor=instrumentor,
         buffer=buffer,
         transport=transport,
         processor=processor,

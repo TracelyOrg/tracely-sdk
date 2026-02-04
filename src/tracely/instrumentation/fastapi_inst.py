@@ -7,12 +7,13 @@ support via context propagation. Captures full request/response data (FR6/FR7).
 
 from __future__ import annotations
 
+import inspect
+import json
 import logging
 from typing import Any, Callable
 
 from tracely.capture import build_url, capture_request_data, capture_response_data
 from tracely.context import _span_context
-from tracely.instrumentation.base import BaseInstrumentor
 from tracely.span import Span
 from tracely.span_processor import on_span_end, on_span_start
 
@@ -36,6 +37,41 @@ def _extract_header_value(
     return ""
 
 
+def _resolve_route(app: Any, scope: Scope) -> dict[str, str]:
+    """Match ASGI scope against Starlette/FastAPI routes for rich metadata.
+
+    Returns a dict of span attributes if a matching route is found.
+    """
+    try:
+        from starlette.routing import Match
+
+        routes = getattr(app, "routes", None)
+        if routes is None:
+            return {}
+
+        for route in routes:
+            match, child_scope = route.matches(scope)
+            if match == Match.FULL:
+                attrs: dict[str, str] = {"http.route": route.path}
+                endpoint = getattr(route, "endpoint", None)
+                if endpoint is not None:
+                    attrs["code.function"] = endpoint.__name__
+                    try:
+                        attrs["code.filepath"] = inspect.getfile(endpoint)
+                    except (TypeError, OSError):
+                        pass
+                tags = getattr(route, "tags", None)
+                if tags:
+                    attrs["fastapi.route.tags"] = ",".join(str(t) for t in tags)
+                path_params = child_scope.get("path_params", {})
+                if path_params:
+                    attrs["fastapi.path_params"] = json.dumps(path_params)
+                return attrs
+    except Exception:
+        logger.debug("Error resolving FastAPI route", exc_info=True)
+    return {}
+
+
 class TracelyASGIMiddleware:
     """ASGI middleware that creates root spans for HTTP requests.
 
@@ -51,11 +87,19 @@ class TracelyASGIMiddleware:
         on_span: Callable[[dict[str, Any]], None] | None = None,
         service_name: str | None = None,
         on_end: Callable[[Span], None] | None = None,
+        app_ref: Any | None = None,
     ) -> None:
         self.app = app
         self._on_span = on_span
+        # Fall back to the SDK-configured service_name when not passed explicitly
+        if service_name is None:
+            from tracely.sdk import _sdk_instance
+            inst = _sdk_instance()
+            if inst is not None:
+                service_name = inst.config.service_name
         self._service_name = service_name
         self._on_end = on_end
+        self._app_ref = app_ref
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
@@ -75,10 +119,13 @@ class TracelyASGIMiddleware:
             port = server[1]
             # Include port only if non-standard
             if (scheme == "https" and port != 443) or (scheme == "http" and port != 80):
-                host = f"{host}:{port}"
+                host_str = f"{host}:{port}"
+            else:
+                host_str = host
         else:
-            host = "localhost"
-        full_url = build_url(scheme, host, path, query)
+            host_str = "localhost"
+            port = 80
+        full_url = build_url(scheme, host_str, path, query)
 
         # Extract content type from request headers
         req_content_type = _extract_header_value(raw_headers, b"content-type")
@@ -91,6 +138,21 @@ class TracelyASGIMiddleware:
         )
         span.set_attribute("http.route", path)
         span.set_attribute("http.query", query)
+
+        # Resolve route and enrich span when app_ref is available
+        if self._app_ref is not None:
+            route_attrs = _resolve_route(self._app_ref, scope)
+            for key, value in route_attrs.items():
+                span.set_attribute(key, value)
+
+        # Standard OTEL attributes from request
+        span.set_attribute("http.host", host_str)
+        span.set_attribute("http.scheme", scheme)
+        if server:
+            span.set_attribute("net.host.port", str(server[1]))
+        user_agent = _extract_header_value(raw_headers, b"user-agent")
+        if user_agent:
+            span.set_attribute("http.user_agent", user_agent)
 
         # AR3: Export pending_span immediately for real-time dashboard
         on_span_start(span)
@@ -166,38 +228,18 @@ class TracelyASGIMiddleware:
                         logger.debug("Error in on_span callback", exc_info=True)
 
 
-class FastAPIInstrumentor(BaseInstrumentor):
-    """Instruments FastAPI applications with ASGI middleware.
+def instrument_fastapi(app: Any, *, service_name: str | None = None) -> None:
+    """Instrument a FastAPI application with Tracely tracing.
 
-    On activate(), registers the middleware factory so it can be applied
-    to FastAPI apps. The actual wrapping happens when the user's app
-    is detected or when middleware is explicitly applied.
+    Adds TracelyASGIMiddleware to the app with full route resolution,
+    handler metadata, and automatic config inheritance from tracely.init().
+
+    Args:
+        app: A FastAPI application instance.
+        service_name: Override the service name from tracely.init() config.
     """
+    from tracely.sdk import _sdk_instance
 
-    def __init__(self, framework_info: Any) -> None:
-        super().__init__(framework_info)
-        self._active = False
-
-    def activate(self) -> None:
-        self._active = True
-        logger.info("TRACELY: FastAPI instrumentation activated")
-
-    def deactivate(self) -> None:
-        self._active = False
-        logger.debug("TRACELY: FastAPI instrumentation deactivated")
-
-    @property
-    def is_active(self) -> bool:
-        return self._active
-
-    @staticmethod
-    def wrap_app(
-        app: ASGIApp,
-        on_span: Callable[[dict[str, Any]], None] | None = None,
-        service_name: str | None = None,
-        on_end: Callable[[Span], None] | None = None,
-    ) -> TracelyASGIMiddleware:
-        """Wrap an ASGI app with TRACELY middleware."""
-        return TracelyASGIMiddleware(
-            app=app, on_span=on_span, service_name=service_name, on_end=on_end,
-        )
+    inst = _sdk_instance()
+    svc = service_name or (inst.config.service_name if inst else None)
+    app.add_middleware(TracelyASGIMiddleware, service_name=svc, app_ref=app)

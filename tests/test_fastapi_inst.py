@@ -2,22 +2,14 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock
-
 import pytest
 
 from tracely.context import get_current_span
-from tracely.detection import FrameworkInfo
 from tracely.instrumentation.fastapi_inst import (
-    FastAPIInstrumentor,
     TracelyASGIMiddleware,
+    instrument_fastapi,
 )
 from tracely.span import Span
-
-
-@pytest.fixture
-def framework_info() -> FrameworkInfo:
-    return FrameworkInfo(name="fastapi")
 
 
 class TestTracelyASGIMiddleware:
@@ -270,19 +262,24 @@ class TestTracelyASGIMiddleware:
         pass
 
 
-class TestFastAPIInstrumentor:
-    """Test instrumentor activation/deactivation."""
+class TestInstrumentFastapi:
+    """Test the instrument_fastapi() convenience function."""
 
-    def test_activate_and_deactivate(self, framework_info: FrameworkInfo) -> None:
-        inst = FastAPIInstrumentor(framework_info)
-        inst.activate()
-        inst.deactivate()
+    def test_instrument_fastapi_adds_middleware(self) -> None:
+        """instrument_fastapi() calls app.add_middleware."""
+        added = []
 
-    def test_never_raises(self, framework_info: FrameworkInfo) -> None:
-        """Instrumentor never crashes even if FastAPI is not importable."""
-        inst = FastAPIInstrumentor(framework_info)
-        inst.activate()
-        inst.deactivate()
+        class FakeApp:
+            def add_middleware(self, cls, **kwargs):
+                added.append((cls, kwargs))
+
+        app = FakeApp()
+        instrument_fastapi(app, service_name="test-svc")
+        assert len(added) == 1
+        cls, kwargs = added[0]
+        assert cls is TracelyASGIMiddleware
+        assert kwargs["service_name"] == "test-svc"
+        assert kwargs["app_ref"] is app
 
 
 class TestASGIRequestResponseCapture:

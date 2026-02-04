@@ -8,12 +8,13 @@ data (FR6/FR7).
 
 from __future__ import annotations
 
+import inspect
+import json
 import logging
 from typing import Any, Callable, Iterable
 
 from tracely.capture import build_url, capture_request_data, capture_response_data
 from tracely.context import _span_context
-from tracely.instrumentation.base import BaseInstrumentor
 from tracely.span import Span
 from tracely.span_processor import on_span_end, on_span_start
 
@@ -59,6 +60,41 @@ def _read_wsgi_body(environ: dict[str, Any]) -> bytes:
         return b""
 
 
+def _resolve_flask_route(app: Any, path: str, method: str) -> dict[str, str]:
+    """Use Flask's URL map to resolve route pattern and handler metadata.
+
+    Returns a dict of span attributes if a matching route is found.
+    """
+    try:
+        adapter = app.url_map.bind("")
+        endpoint, args = adapter.match(path, method)
+        view_func = app.view_functions.get(endpoint)
+
+        # Find the matching rule for the route pattern
+        rule_str = ""
+        for rule in app.url_map.iter_rules():
+            if rule.endpoint == endpoint:
+                rule_str = rule.rule
+                break
+
+        attrs: dict[str, str] = {}
+        if rule_str:
+            attrs["http.route"] = rule_str
+        attrs["flask.endpoint"] = endpoint
+        if args:
+            attrs["flask.path_params"] = json.dumps(args)
+        if view_func is not None:
+            attrs["code.function"] = view_func.__name__
+            try:
+                attrs["code.filepath"] = inspect.getfile(view_func)
+            except (TypeError, OSError):
+                pass
+        return attrs
+    except Exception:
+        logger.debug("Error resolving Flask route", exc_info=True)
+        return {}
+
+
 class TracelyWSGIMiddleware:
     """WSGI middleware that creates root spans for HTTP requests.
 
@@ -73,11 +109,19 @@ class TracelyWSGIMiddleware:
         on_span: Callable[[dict[str, Any]], None] | None = None,
         service_name: str | None = None,
         on_end: Callable[[Span], None] | None = None,
+        app_ref: Any | None = None,
     ) -> None:
         self.app = app
         self._on_span = on_span
+        # Fall back to the SDK-configured service_name when not passed explicitly
+        if service_name is None:
+            from tracely.sdk import _sdk_instance
+            inst = _sdk_instance()
+            if inst is not None:
+                service_name = inst.config.service_name
         self._service_name = service_name
         self._on_end = on_end
+        self._app_ref = app_ref
 
     def __call__(
         self,
@@ -113,6 +157,22 @@ class TracelyWSGIMiddleware:
         )
         span.set_attribute("http.route", path)
         span.set_attribute("http.query", query)
+
+        # Resolve route and enrich span when app_ref is available
+        if self._app_ref is not None:
+            route_attrs = _resolve_flask_route(self._app_ref, path, method)
+            for key, value in route_attrs.items():
+                span.set_attribute(key, value)
+
+        # Standard OTEL attributes from request
+        span.set_attribute("http.host", host)
+        span.set_attribute("http.scheme", scheme)
+        server_port = environ.get("SERVER_PORT")
+        if server_port:
+            span.set_attribute("net.host.port", server_port)
+        user_agent = req_headers.get("user-agent", "")
+        if user_agent:
+            span.set_attribute("http.user_agent", user_agent)
 
         # AR3: Export pending_span immediately for real-time dashboard
         on_span_start(span)
@@ -183,33 +243,21 @@ class TracelyWSGIMiddleware:
                         logger.debug("Error in on_span callback", exc_info=True)
 
 
-class FlaskInstrumentor(BaseInstrumentor):
-    """Instruments Flask applications with WSGI middleware wrapping."""
+def instrument_flask(app: Any, *, service_name: str | None = None) -> None:
+    """Instrument a Flask application with Tracely tracing.
 
-    def __init__(self, framework_info: Any) -> None:
-        super().__init__(framework_info)
-        self._active = False
+    Wraps the Flask app's WSGI app with TracelyWSGIMiddleware, providing
+    full route resolution, handler metadata, and automatic config
+    inheritance from tracely.init().
 
-    def activate(self) -> None:
-        self._active = True
-        logger.info("TRACELY: Flask instrumentation activated")
+    Args:
+        app: A Flask application instance.
+        service_name: Override the service name from tracely.init() config.
+    """
+    from tracely.sdk import _sdk_instance
 
-    def deactivate(self) -> None:
-        self._active = False
-        logger.debug("TRACELY: Flask instrumentation deactivated")
-
-    @property
-    def is_active(self) -> bool:
-        return self._active
-
-    @staticmethod
-    def wrap_app(
-        app: Callable[..., Iterable[bytes]],
-        on_span: Callable[[dict[str, Any]], None] | None = None,
-        service_name: str | None = None,
-        on_end: Callable[[Span], None] | None = None,
-    ) -> TracelyWSGIMiddleware:
-        """Wrap a WSGI app with TRACELY middleware."""
-        return TracelyWSGIMiddleware(
-            app=app, on_span=on_span, service_name=service_name, on_end=on_end,
-        )
+    inst = _sdk_instance()
+    svc = service_name or (inst.config.service_name if inst else None)
+    app.wsgi_app = TracelyWSGIMiddleware(
+        app.wsgi_app, service_name=svc, app_ref=app,
+    )

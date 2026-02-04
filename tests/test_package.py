@@ -33,3 +33,27 @@ def test_shutdown_exported():
 
     assert hasattr(tracely, "shutdown")
     assert callable(tracely.shutdown)
+
+
+def test_instrument_fastapi_exported():
+    """tracely.instrument_fastapi() is available as a public API."""
+    import tracely
+
+    assert hasattr(tracely, "instrument_fastapi")
+    assert callable(tracely.instrument_fastapi)
+
+
+def test_instrument_flask_exported():
+    """tracely.instrument_flask() is available as a public API."""
+    import tracely
+
+    assert hasattr(tracely, "instrument_flask")
+    assert callable(tracely.instrument_flask)
+
+
+def test_instrument_django_exported():
+    """tracely.instrument_django() is available as a public API."""
+    import tracely
+
+    assert hasattr(tracely, "instrument_django")
+    assert callable(tracely.instrument_django)

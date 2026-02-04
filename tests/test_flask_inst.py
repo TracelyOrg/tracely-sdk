@@ -8,17 +8,11 @@ from unittest.mock import MagicMock
 import pytest
 
 from tracely.context import get_current_span
-from tracely.detection import FrameworkInfo
 from tracely.instrumentation.flask_inst import (
-    FlaskInstrumentor,
     TracelyWSGIMiddleware,
+    instrument_flask,
 )
 from tracely.span import Span
-
-
-@pytest.fixture
-def framework_info() -> FrameworkInfo:
-    return FrameworkInfo(name="flask")
 
 
 class TestTracelyWSGIMiddleware:
@@ -149,18 +143,21 @@ class TestTracelyWSGIMiddleware:
         assert active_spans[0].name == "GET /test"
 
 
-class TestFlaskInstrumentor:
-    """Test instrumentor activation/deactivation."""
+class TestInstrumentFlask:
+    """Test the instrument_flask() convenience function."""
 
-    def test_activate_and_deactivate(self, framework_info: FrameworkInfo) -> None:
-        inst = FlaskInstrumentor(framework_info)
-        inst.activate()
-        inst.deactivate()
+    def test_instrument_flask_wraps_wsgi_app(self) -> None:
+        """instrument_flask() wraps app.wsgi_app with TracelyWSGIMiddleware."""
 
-    def test_never_raises(self, framework_info: FrameworkInfo) -> None:
-        inst = FlaskInstrumentor(framework_info)
-        inst.activate()
-        inst.deactivate()
+        class FakeApp:
+            def __init__(self):
+                self.wsgi_app = lambda environ, start_response: []
+
+        app = FakeApp()
+        instrument_flask(app, service_name="flask-svc")
+        assert isinstance(app.wsgi_app, TracelyWSGIMiddleware)
+        assert app.wsgi_app._service_name == "flask-svc"
+        assert app.wsgi_app._app_ref is app
 
 
 class TestWSGIRequestResponseCapture:

@@ -115,9 +115,23 @@ def serialize_spans(spans: list[dict[str, Any]]) -> bytes:
         svc = span_dict.get("service_name") or "unknown"
         grouped[svc].append(span_dict)
 
+    # Pull environment + framework from the SDK config for resource attributes
+    from tracely.sdk import _sdk_instance
+    inst = _sdk_instance()
+
     resource_spans_list = []
     for svc_name, svc_spans in grouped.items():
-        resource = Resource(attributes=[_make_kv("service.name", svc_name)])
+        resource_attrs = [_make_kv("service.name", svc_name)]
+        if inst is not None:
+            if inst.config.environment:
+                resource_attrs.append(
+                    _make_kv("tracely.environment", inst.config.environment)
+                )
+            if inst.framework_info is not None:
+                resource_attrs.append(
+                    _make_kv("tracely.framework", inst.framework_info.name)
+                )
+        resource = Resource(attributes=resource_attrs)
         otlp_spans = [_span_to_otlp(s) for s in svc_spans]
         scope_spans = ScopeSpans(spans=otlp_spans)
         resource_spans_list.append(

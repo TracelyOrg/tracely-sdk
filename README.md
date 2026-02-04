@@ -8,7 +8,7 @@ Lightweight observability SDK for Python web frameworks. Auto-instruments **Fast
 
 ## Features
 
-- **Zero-config auto-instrumentation** -- detects FastAPI, Flask, and Django automatically
+- **One-call instrumentation** -- `instrument_fastapi(app)`, `instrument_flask(app)`, `instrument_django()`
 - **Real-time pending spans** -- see requests the moment they start, not just when they finish
 - **Full request/response capture** -- headers, body, query params with smart redaction
 - **OTLP/HTTP protobuf export** -- standard OpenTelemetry wire format
@@ -28,13 +28,12 @@ pip install tracely-sdk
 
 ```python
 import tracely
-from tracely.instrumentation.fastapi_inst import TracelyASGIMiddleware
+from fastapi import FastAPI
 
 tracely.init(api_key="trly_your_key_here")
 
-from fastapi import FastAPI
 app = FastAPI()
-app.add_middleware(TracelyASGIMiddleware)
+tracely.instrument_fastapi(app)
 
 @app.get("/")
 async def root():
@@ -45,13 +44,12 @@ async def root():
 
 ```python
 import tracely
-from tracely.instrumentation.flask_inst import FlaskInstrumentor
+from flask import Flask
 
 tracely.init(api_key="trly_your_key_here")
 
-from flask import Flask
 app = Flask(__name__)
-app.wsgi_app = FlaskInstrumentor.wrap_app(app.wsgi_app)
+tracely.instrument_flask(app)
 
 @app.route("/")
 def root():
@@ -60,21 +58,13 @@ def root():
 
 ### Django
 
-Add the middleware to your `MIDDLEWARE` setting:
-
-```python
-# settings.py
-MIDDLEWARE = [
-    "tracely.instrumentation.django_inst.TracelyDjangoMiddleware",
-    # ... other middleware
-]
-```
-
-Then initialize in your app startup (e.g., `AppConfig.ready()`):
+Initialize and instrument in your app startup (e.g., `AppConfig.ready()`):
 
 ```python
 import tracely
+
 tracely.init(api_key="trly_your_key_here")
+tracely.instrument_django()
 ```
 
 ## Configuration

@@ -10,5 +10,20 @@ except ImportError:
 from tracely.sdk import init, shutdown
 from tracely.tracing import span
 from tracely.logging_api import debug, info, warning, error
+from tracely.instrumentation.fastapi_inst import instrument_fastapi
+from tracely.instrumentation.flask_inst import instrument_flask
+from tracely.instrumentation.django_inst import instrument_django
 
-__all__ = ["init", "shutdown", "span", "debug", "info", "warning", "error", "__version__"]
+__all__ = [
+    "init",
+    "shutdown",
+    "span",
+    "debug",
+    "info",
+    "warning",
+    "error",
+    "instrument_fastapi",
+    "instrument_flask",
+    "instrument_django",
+    "__version__",
+]

@@ -23,7 +23,6 @@ import asyncio
 import logging
 
 import tracely
-from tracely.instrumentation.fastapi_inst import TracelyASGIMiddleware
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
@@ -41,8 +40,8 @@ tracely.init(
 
 app = FastAPI(title="Tracely SDK Test App")
 
-# Add the middleware -- this auto-instruments all routes
-app.add_middleware(TracelyASGIMiddleware)
+# Instrument the app -- one call for full config, route resolution, and rich metadata
+tracely.instrument_fastapi(app)
 
 
 @app.get("/")

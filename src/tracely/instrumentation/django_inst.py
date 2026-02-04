@@ -7,12 +7,13 @@ propagation. Captures full request/response data (FR6/FR7).
 
 from __future__ import annotations
 
+import inspect
+import json
 import logging
 from typing import Any, Callable
 
 from tracely.capture import build_url, capture_request_data, capture_response_data
 from tracely.context import _span_context
-from tracely.instrumentation.base import BaseInstrumentor
 from tracely.span import Span
 from tracely.span_processor import on_span_end, on_span_start
 
@@ -37,6 +38,33 @@ def _extract_django_headers(meta: dict[str, Any]) -> dict[str, str]:
     return headers
 
 
+def _resolve_django_route(path: str) -> dict[str, str]:
+    """Use Django's URL resolver to match the path and extract metadata.
+
+    Returns a dict of span attributes if a matching route is found.
+    """
+    try:
+        from django.urls import resolve
+
+        match = resolve(path)
+        attrs: dict[str, str] = {}
+        if hasattr(match, "route") and match.route:
+            attrs["http.route"] = match.route
+        attrs["code.function"] = match.func.__name__
+        try:
+            attrs["code.filepath"] = inspect.getfile(match.func)
+        except (TypeError, OSError):
+            pass
+        if match.url_name:
+            attrs["django.url_name"] = match.url_name
+        if match.app_name:
+            attrs["django.app_name"] = match.app_name
+        return attrs
+    except Exception:
+        logger.debug("Error resolving Django route", exc_info=True)
+        return {}
+
+
 class TracelyDjangoMiddleware:
     """Django middleware that creates root spans for HTTP requests.
 
@@ -54,6 +82,12 @@ class TracelyDjangoMiddleware:
     ) -> None:
         self.get_response = get_response
         self._on_span = on_span
+        # Fall back to the SDK-configured service_name when not passed explicitly
+        if service_name is None:
+            from tracely.sdk import _sdk_instance
+            inst = _sdk_instance()
+            if inst is not None:
+                service_name = inst.config.service_name
         self._service_name = service_name
         self._on_end = on_end
 
@@ -82,12 +116,27 @@ class TracelyDjangoMiddleware:
         span.set_attribute("http.route", path)
         span.set_attribute("http.query", query)
 
+        # Standard OTEL attributes from request
+        span.set_attribute("http.host", host)
+        span.set_attribute("http.scheme", scheme)
+        server_port = meta.get("SERVER_PORT")
+        if server_port:
+            span.set_attribute("net.host.port", server_port)
+        user_agent = req_headers.get("user-agent", "")
+        if user_agent:
+            span.set_attribute("http.user_agent", user_agent)
+
         # AR3: Export pending_span immediately for real-time dashboard
         on_span_start(span)
 
         with _span_context(span):
             try:
                 response = self.get_response(request)
+
+                # Resolve Django route after response (resolver is available)
+                route_attrs = _resolve_django_route(path)
+                for key, value in route_attrs.items():
+                    span.set_attribute(key, value)
 
                 # Extract response data
                 resp_headers_dict: dict[str, str] = {}
@@ -135,21 +184,18 @@ class TracelyDjangoMiddleware:
                         logger.debug("Error in on_span callback", exc_info=True)
 
 
-class DjangoInstrumentor(BaseInstrumentor):
-    """Instruments Django applications with middleware."""
+def instrument_django(*, service_name: str | None = None) -> None:
+    """Instrument a Django application with Tracely tracing.
 
-    def __init__(self, framework_info: Any) -> None:
-        super().__init__(framework_info)
-        self._active = False
+    Programmatically inserts TracelyDjangoMiddleware at the top of
+    Django's MIDDLEWARE list. Call this after django.setup() or in
+    AppConfig.ready().
 
-    def activate(self) -> None:
-        self._active = True
-        logger.info("TRACELY: Django instrumentation activated")
+    Args:
+        service_name: Override the service name from tracely.init() config.
+    """
+    from django.conf import settings
 
-    def deactivate(self) -> None:
-        self._active = False
-        logger.debug("TRACELY: Django instrumentation deactivated")
-
-    @property
-    def is_active(self) -> bool:
-        return self._active
+    mw = "tracely.instrumentation.django_inst.TracelyDjangoMiddleware"
+    if mw not in settings.MIDDLEWARE:
+        settings.MIDDLEWARE.insert(0, mw)

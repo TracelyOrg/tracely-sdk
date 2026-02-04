@@ -8,17 +8,10 @@ from unittest.mock import MagicMock
 import pytest
 
 from tracely.context import get_current_span
-from tracely.detection import FrameworkInfo
 from tracely.instrumentation.django_inst import (
-    DjangoInstrumentor,
     TracelyDjangoMiddleware,
 )
 from tracely.span import Span
-
-
-@pytest.fixture
-def framework_info() -> FrameworkInfo:
-    return FrameworkInfo(name="django")
 
 
 class TestTracelyDjangoMiddleware:
@@ -139,20 +132,6 @@ class TestTracelyDjangoMiddleware:
         assert len(active_spans) == 1
         assert isinstance(active_spans[0], Span)
         assert active_spans[0].name == "GET /test/"
-
-
-class TestDjangoInstrumentor:
-    """Test instrumentor activation/deactivation."""
-
-    def test_activate_and_deactivate(self, framework_info: FrameworkInfo) -> None:
-        inst = DjangoInstrumentor(framework_info)
-        inst.activate()
-        inst.deactivate()
-
-    def test_never_raises(self, framework_info: FrameworkInfo) -> None:
-        inst = DjangoInstrumentor(framework_info)
-        inst.activate()
-        inst.deactivate()
 
 
 class TestDjangoRequestResponseCapture:
