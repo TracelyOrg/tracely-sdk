@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("tracely")
 
-DEFAULT_FLUSH_INTERVAL = 1.0  # seconds (AC3)
+DEFAULT_FLUSH_INTERVAL = 0.2  # seconds - reduced from 1.0s for near-instant delivery
 
 
 class BatchSpanExporter:

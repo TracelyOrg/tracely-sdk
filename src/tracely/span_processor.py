@@ -73,9 +73,13 @@ class SpanProcessor:
         self._buffer = buffer
         self._on_buffer_ready = on_buffer_ready
 
-    def _maybe_notify(self) -> None:
-        """Call the notify callback if the buffer has reached batch threshold."""
-        if self._on_buffer_ready is not None and self._buffer.is_ready:
+    def _notify(self) -> None:
+        """Always call the notify callback to trigger immediate flush.
+
+        Changed from batch-threshold-only to always-notify for near-instant delivery.
+        The exporter's flush interval (200ms) still provides natural batching.
+        """
+        if self._on_buffer_ready is not None:
             try:
                 self._on_buffer_ready()
             except Exception:
@@ -91,7 +95,7 @@ class SpanProcessor:
             d = span.to_dict()
             d["span_type"] = "pending_span"
             self._buffer.enqueue(d)
-            self._maybe_notify()
+            self._notify()
         except Exception:
             logger.debug("Error in SpanProcessor.on_start", exc_info=True)
 
@@ -105,6 +109,6 @@ class SpanProcessor:
             d = span.to_dict()
             d["span_type"] = "span"
             self._buffer.enqueue(d)
-            self._maybe_notify()
+            self._notify()
         except Exception:
             logger.debug("Error in SpanProcessor.on_end", exc_info=True)

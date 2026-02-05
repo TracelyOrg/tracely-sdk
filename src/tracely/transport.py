@@ -14,8 +14,8 @@ logger = logging.getLogger("tracely")
 DEFAULT_BATCH_SIZE = 50
 DEFAULT_MAX_BUFFER = 1000
 DEFAULT_MAX_RETRIES = 3
-DEFAULT_BASE_DELAY = 1.0
-DEFAULT_MAX_DELAY = 30.0
+DEFAULT_BASE_DELAY = 0.1  # reduced from 1.0s for faster recovery
+DEFAULT_MAX_DELAY = 5.0   # reduced from 30s to avoid long delays
 
 
 class SpanBuffer:
