@@ -258,22 +258,17 @@ class TestFullPipeline:
         names = [i["span_name"] for i in items]
         assert names == [f"span-{i}" for i in range(5, 10)]
 
-    def test_batch_threshold_triggers_notify(self):
-        """AC3: When buffer reaches batch_size, processor calls notify."""
+    def test_every_span_triggers_notify(self):
+        """AC3: Processor calls notify on every span for near-instant delivery."""
         notified = []
         buf = SpanBuffer(batch_size=3)
         proc = SpanProcessor(buffer=buf, on_buffer_ready=lambda: notified.append(True))
 
-        # Enqueue 2 spans — under threshold, no notify
-        for _ in range(2):
+        # Each span triggers notify for immediate flush
+        for i in range(3):
             span = Span(name="GET /", kind="SERVER")
             proc.on_start(span)
-        assert len(notified) == 0
-
-        # 3rd span crosses threshold
-        span = Span(name="GET /", kind="SERVER")
-        proc.on_start(span)
-        assert len(notified) == 1
+            assert len(notified) == i + 1
 
     def test_fail_silent_on_processor_error(self):
         """AC4/FR10: Processor errors don't crash the host."""
